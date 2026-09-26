@@ -18,7 +18,7 @@ def list_tasks(list_id: str, completed: bool | None = None) -> Any:
 
 def create_task(list_id: str, subject: str, due: str | None = None,
                 importance: str = "normal", completed: bool = False) -> Any:
-    task: dict = {"subject": subject, "importance": importance,
+    task: dict = {"title": subject, "importance": importance,
                   "isCompleted": completed}
     if due:
         task["dueDateTime"] = {"dateTime": due, "timeZone": "UTC"}
@@ -30,7 +30,7 @@ def update_task(list_id: str, task_id: str, *, subject: str | None = None,
                 completed: bool | None = None) -> Any:
     patch: dict = {}
     if subject is not None:
-        patch["subject"] = subject
+        patch["title"] = subject
     if due is not None:
         patch["dueDateTime"] = {"dateTime": due, "timeZone": "UTC"}
     if importance is not None:
