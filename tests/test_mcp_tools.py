@@ -150,3 +150,36 @@ def test_schemas_are_valid_json_schemas():
         assert schema["required"] == ["action"]
         for action in schema["properties"]["action"]["enum"]:
             assert isinstance(action, str)
+
+
+def test_async_path_dispatches_via_to_thread(rec):
+    """The async call_tool_impl runs the blocking dispatch off the event loop."""
+    r = asyncio.run(srv.call_tool_impl("proton_mail", {"action": "status"}))
+    assert r["success"] is True
+    assert "status" in rec["argv"] or "count" in rec["argv"]
+
+
+def test_confirm_top_level_true_runs_real(rec):
+    r = asyncio.run(
+        srv.call_tool_impl("proton_drive", {"action": "trash", "params": {"refs": ["1"]}, "confirm": True})
+    )
+    assert r["dry_run"] is False
+
+
+def test_confirm_params_placement_true_runs_real(rec):
+    r = asyncio.run(
+        srv.call_tool_impl("proton_drive", {"action": "trash", "params": {"refs": ["1"], "confirm": True}})
+    )
+    assert r["dry_run"] is False
+
+
+def test_confirm_params_false_overrides_top_level_true(rec):
+    """params.confirm wins: false there keeps the dry-run fail-safe default."""
+    r = asyncio.run(
+        srv.call_tool_impl(
+            "proton_drive",
+            {"action": "trash", "params": {"refs": ["1"], "confirm": False}, "confirm": True},
+        )
+    )
+    assert r["dry_run"] is True
+    assert "--dry-run" in rec["argv"]

@@ -33,7 +33,8 @@ GATING_DOC = (
     "confirm=true after explicit approval to run it for real."
 )
 
-# Action tables mirror proton_mcp.tools exactly.
+# Action tables: gated lists are DERIVED from the tool layer's GATED_ACTIONS
+# so they can never drift apart from the real gating; reads stay declarative.
 TOOL_SPECS: dict[str, dict[str, Any]] = {
     "proton_mail": {
         "tool": tools.MAIL_TOOL,
@@ -43,7 +44,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             + GATING_DOC
         ),
         "reads": ("status", "list", "search", "get"),
-        "gated": ("send", "move", "label", "unlabel", "mark", "trash"),
+        "gated": tuple(sorted(tools.MAIL_TOOL.GATED_ACTIONS)),
         "filter": True,
         "extra_params": {
             "query": {"type": "string", "description": "Search query (search action)"},
@@ -69,7 +70,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "events_get, gated events_create/events_delete. " + GATING_DOC
         ),
         "reads": ("calendars", "events_list", "events_get"),
-        "gated": ("events_create", "events_delete"),
+        "gated": tuple(sorted(tools.CALENDAR_TOOL.GATED_ACTIONS)),
         "filter": False,
         "extra_params": {
             "id": {"type": "string", "description": "Event reference (events_get/events_delete)"},
@@ -92,7 +93,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "upload/trash. " + GATING_DOC
         ),
         "reads": ("list", "get", "download"),
-        "gated": ("upload", "trash"),
+        "gated": tuple(sorted(tools.DRIVE_TOOL.GATED_ACTIONS)),
         "filter": False,
         "extra_params": {
             "id": {"type": "string", "description": "Item id (get)"},
@@ -181,7 +182,16 @@ INPUT_SCHEMAS = {name: build_input_schema(name) for name in TOOL_SPECS}
 
 
 async def call_tool_impl(name: str, arguments: dict[str, Any]) -> dict:
-    """Dispatch an MCP tool call to the tool layer (testable without stdio)."""
+    """Async MCP entry point: dispatch off the event loop via to_thread."""
+    return await asyncio.to_thread(call_tool_sync, name, arguments)
+
+
+def call_tool_sync(name: str, arguments: dict[str, Any]) -> dict:
+    """Dispatch an MCP tool call to the tool layer (testable without stdio).
+
+    Runs synchronously so the blocking subprocess call never blocks the
+    event loop; call_tool_impl awaits it via asyncio.to_thread.
+    """
     if name not in TOOL_SPECS:
         raise ValueError(f"unknown tool {name!r}")
     arguments = dict(arguments or {})
@@ -192,9 +202,11 @@ async def call_tool_impl(name: str, arguments: dict[str, Any]) -> dict:
     if not isinstance(params, dict):
         raise ValueError("'params' must be an object")
     if "confirm" in INPUT_SCHEMAS[name]["properties"]:
-        # confirm is a top-level tool argument, the tool layer expects it
-        # merged into params.
-        params["confirm"] = bool(arguments.get("confirm", False))
+        # confirm is a top-level tool argument; the tool layer expects it
+        # merged into params. Precedence: an explicit params.confirm from the
+        # client wins over the top-level argument (fail-safe: absence -> false,
+        # which is the dry-run default either way).
+        params.setdefault("confirm", bool(arguments.get("confirm", False)))
     return TOOL_SPECS[name]["tool"].dispatch(action, params)
 
 
