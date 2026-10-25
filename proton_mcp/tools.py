@@ -441,6 +441,9 @@ class DriveTool(_BaseTool):
         raise ValueError(f"unknown gated action {action!r} for drive")
 
 
+# Late import to avoid a circular import (photos imports helpers from tools).
+from .photos import PHOTOS_TOOL  # noqa: E402
+
 MAIL_TOOL = MailTool()
 CALENDAR_TOOL = CalendarTool()
 DRIVE_TOOL = DriveTool()

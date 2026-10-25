@@ -113,6 +113,52 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "proton_photos": {
+        "tool": tools.PHOTOS_TOOL,
+        "description": (
+            "Proton Photos via proton-cli: reads list/albums/download, gated "
+            "trash/delete/favorite/unfavorite. NOTE: photos have NO filename — "
+            "address them by link_id (from list results) or by capture_time via a "
+            "list query; there is no per-photo metadata verb. download is a read "
+            "but writes locally — only into a caller-named dest_dir. delete is "
+            "PERMANENT (photos are not recoverable from trash). " + GATING_DOC
+        ),
+        "reads": ("list", "albums", "download"),
+        "gated": tuple(sorted(tools.PHOTOS_TOOL.GATED_ACTIONS)),
+        "filter": False,
+        "extra_params": {
+            "album": {"type": "string", "description": "Album name or ID (list)"},
+            "tag": {
+                "type": "string",
+                "description": (
+                    "Tag filter (list): favorites, screenshots, videos, "
+                    "live-photos, motion-photos, selfies, portraits, bursts, "
+                    "panoramas, raw"
+                ),
+            },
+            "limit": {"type": "integer", "description": "Per-page count; 0 for all (list/albums)"},
+            "page": {"type": "integer", "description": "Page number, from zero (list/albums)"},
+            "sort": {
+                "type": "string",
+                "description": "Order by: captured (list, default) or name/photos (albums)",
+            },
+            "desc": {"type": "boolean", "description": "Reverse the order (list/albums)"},
+            "ref": {
+                "type": "string",
+                "description": "Photo link_id (download; single-photo form of refs)",
+            },
+            "dest_dir": {
+                "type": "string",
+                "description": "Local directory to download into (required for download)",
+            },
+            "force": {"type": "boolean", "description": "Overwrite existing local files (download)"},
+            "refs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Photo link_ids for a bulk gated action (exclusive with ref)",
+            },
+        },
+    },
 }
 
 # Filter object schema: mirrors the mail filter keys exactly (13 value flags

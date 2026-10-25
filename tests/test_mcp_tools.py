@@ -10,10 +10,10 @@ import pytest
 from proton_mcp import runner
 from proton_mcp import server as srv
 
-EXPECTED_TOOLS = {"proton_mail", "proton_calendar", "proton_drive"}
+EXPECTED_TOOLS = {"proton_mail", "proton_calendar", "proton_drive", "proton_photos"}
 
 
-def test_three_tools_registered():
+def test_four_tools_registered():
     assert set(srv.TOOL_SPECS) == EXPECTED_TOOLS
     assert set(srv.INPUT_SCHEMAS) == EXPECTED_TOOLS
 
@@ -27,6 +27,9 @@ def test_action_enums_mirror_tool_layer():
                         "events_create", "events_delete"}
     drv = srv.INPUT_SCHEMAS["proton_drive"]["properties"]["action"]["enum"]
     assert set(drv) == {"list", "get", "download", "upload", "trash"}
+    ph = srv.INPUT_SCHEMAS["proton_photos"]["properties"]["action"]["enum"]
+    assert set(ph) == {"list", "albums", "download", "trash", "delete",
+                       "favorite", "unfavorite"}
 
 
 def test_gated_actions_have_confirm_default_false():
@@ -136,7 +139,7 @@ def test_list_tools_and_call_tool_via_lowlevel_server(rec):
 
     listed, called = asyncio.run(run())
     names = [t.name for t in listed.tools]
-    assert names == ["proton_mail", "proton_calendar", "proton_drive"]
+    assert names == ["proton_mail", "proton_calendar", "proton_drive", "proton_photos"]
     payload = json.loads(called.content[0].text)
     assert payload["success"] is True
     tail = rec["argv"][1:]  # drop binary path
