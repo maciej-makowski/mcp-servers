@@ -41,6 +41,9 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "description": (
             "Proton Mail via proton-cli: reads status/list/search/get, gated "
             "send/move/label/unlabel/mark/trash (bulk-capable via filter). "
+            "Note: status is a count per folder and the CLI's count verb maps "
+            "only the filter's folder key — other filter keys apply to "
+            "list/search, not status. "
             + GATING_DOC
         ),
         "reads": ("status", "list", "search", "get"),
