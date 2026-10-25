@@ -68,6 +68,16 @@ def _map_filter(f: dict) -> list[str]:
     return argv
 
 
+def _limit_error(f: dict) -> str | None:
+    """Validate the 'limit' rail: must be a plain int (bool excluded) or absent."""
+    limit = f.get("limit")
+    if limit is None:
+        return None
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        return f"'limit' must be an integer, got {type(limit).__name__}"
+    return None
+
+
 def _result(data: dict, **extra) -> dict:
     out = dict(data)
     out.update(extra)
@@ -78,8 +88,27 @@ DRY_RUN_FAILED_NEXT_STEP = (
     "Nothing changed. The dry-run failed: fix the cause (see preview) before retrying."
 )
 
+VALIDATION_FAILED_NEXT_STEP = (
+    "Nothing changed and the CLI was never run: local validation failed. "
+    "Fix the parameters (see preview), then call again."
+)
+
+
+def _is_validation_error(res: dict) -> bool:
+    """Local (pre-CLI) validation failure, tagged by _validation_error."""
+    return res.get("validation") is True
+
 
 def _dry_run_envelope(action: str, preview: dict) -> dict:
+    if _is_validation_error(preview):
+        return {
+            "success": False,
+            "applied": False,
+            "dry_run": True,
+            "action": action,
+            "preview": preview,
+            "next_step": VALIDATION_FAILED_NEXT_STEP,
+        }
     failed = not preview.get("success", False)
     return {
         "success": preview.get("success", False),
@@ -141,7 +170,9 @@ class _BaseTool:
         return res
 
     def _validation_error(self, msg: str) -> dict:
-        return {"success": False, "error": msg, "exit_code": None, "auth_required": False}
+        # Tagged so the dry-run envelope can word next_step correctly
+        # (validation failed, CLI never ran).
+        return {"success": False, "validation": True, "error": msg, "exit_code": None, "auth_required": False}
 
 
 class MailTool(_BaseTool):
@@ -155,6 +186,9 @@ class MailTool(_BaseTool):
         if action == "list":
             args = ["mail", "messages", "list"]
             if "filter" in params:
+                err = _limit_error(params["filter"])
+                if err:
+                    return self._validation_error(err)
                 args += _map_filter(params["filter"])
             return self._run(args)
         if action == "search":
@@ -162,6 +196,9 @@ class MailTool(_BaseTool):
             if "query" in params:
                 args += [str(params["query"])]
             if "filter" in params:
+                err = _limit_error(params["filter"])
+                if err:
+                    return self._validation_error(err)
                 args += _map_filter(params["filter"])
             return self._run(args)
         if action == "get":
@@ -179,13 +216,21 @@ class MailTool(_BaseTool):
             args = ["mail", "messages", "send", "--to", str(to), "--subject", str(subject)]
             return self._run(args, dry_run=dry_run, stdin_text=stdin_text)
 
-        # Bulk actions: explicit refs OR a filter scope.
+        # Bulk actions: explicit refs OR a filter scope, never both.
         refs = params.get("refs")
         filt = params.get("filter") or {}
+        if refs and filt:
+            return self._validation_error(
+                f"{action} accepts either 'refs' or a 'filter' scope, not both "
+                "(combine them by narrowing the filter instead)"
+            )
         if not refs and not filt:
             return self._validation_error(
                 f"{action} requires either 'refs' (list of message ids) or a 'filter' object"
             )
+        err = _limit_error(filt)
+        if err:
+            return self._validation_error(err)
 
         if action == "move":
             into = params.get("into")
@@ -224,7 +269,13 @@ class MailTool(_BaseTool):
         filter_echo = None
         if filt:
             args += _map_filter(filt)
-            filter_echo = {k: filt[k] for k in FILTER_ONLY_KEYS if k in filt}
+            filter_echo = {
+                k: filt[k] for k in FILTER_ONLY_KEYS if k in filt
+            }
+            # Echo the boolean filters that were actually applied (truthy).
+            filter_echo.update(
+                {k: filt[k] for k in BOOLEAN_FILTER_FLAG_MAP if filt.get(k)}
+            )
             args += self._bulk_rails(filt)
             if action == "move":
                 args += ["--into", str(into)]
@@ -260,11 +311,37 @@ class CalendarTool(_BaseTool):
 
     def _read(self, action: str, params: dict) -> dict:
         if action == "calendars":
-            return self._run(["calendar", "calendars"])
+            # Real CLI tree (verified against `--help`): calendars are listed
+            # under `calendar settings calendars list` — there is NO
+            # `proton calendar calendars` command.
+            args = ["calendar", "settings", "calendars", "list"]
+            limit = params.get("limit")
+            if limit is not None:
+                err = _limit_error({"limit": limit})
+                if err:
+                    return self._validation_error(err)
+                args += ["--limit", str(limit)]
+            if params.get("page") is not None:
+                args += ["--page", str(params["page"])]
+            return self._run(args)
         if action == "events_list":
             args = ["calendar", "events", "list"]
-            if params.get("calendar"):
-                args += ["--calendar", str(params["calendar"])]
+            # Verified flags: --after --before --calendar --keyword --limit --page
+            for key, flag in (
+                ("after", "--after"),
+                ("before", "--before"),
+                ("calendar", "--calendar"),
+                ("keyword", "--keyword"),
+                ("page", "--page"),
+            ):
+                if params.get(key) is not None:
+                    args += [flag, str(params[key])]
+            limit = params.get("limit")
+            if limit is not None:
+                err = _limit_error({"limit": limit})
+                if err:
+                    return self._validation_error(err)
+                args += ["--limit", str(limit)]
             return self._run(args)
         if action == "events_get":
             if not params.get("id"):

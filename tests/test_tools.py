@@ -548,3 +548,116 @@ def test_drive_download_requires_path(rec):
 def test_drive_download_never_in_dispatched_dry_run(rec):
     tools.DRIVE_TOOL.dispatch("download", {"path": "/x", "dest_dir": ".", "confirm": False})
     assert "--dry-run" not in rec["argv"]
+
+
+# --- Task 4a polish: re-review fixes ----------------------------------------------
+
+def test_refs_and_filter_not_combined(rec):
+    """refs + filter together is ambiguous -> validation error, no CLI run."""
+    r = tools.MAIL_TOOL.dispatch(
+        "move", {"refs": ["1", "2"], "filter": {"folder": "Inbox"}, "into": "Archive", "confirm": True}
+    )
+    assert r["success"] is False
+    assert r["exit_code"] is None
+    assert "refs" in r["error"] and "filter" in r["error"]
+    assert rec["argv"] == []
+
+
+def test_filter_echo_includes_boolean_filters(rec):
+    rec["proc"] = proc_json({"affected": 3})
+    r = tools.MAIL_TOOL.dispatch(
+        "move",
+        {"filter": {"subject": "x", "read": True, "starred": True}, "into": "Archive", "confirm": True},
+    )
+    assert r["filter"]["subject"] == "x"
+    assert r["filter"]["read"] is True
+    assert r["filter"]["starred"] is True
+    assert "unread" not in r["filter"]
+    assert "has_attachments" not in r["filter"]
+
+
+@pytest.mark.parametrize("limit", ["50", 1.5, True])
+def test_non_int_limit_is_validation_error(rec, limit):
+    r = tools.MAIL_TOOL.dispatch("trash", {"filter": {"subject": "x", "limit": limit}, "confirm": True})
+    assert r["success"] is False
+    assert r["exit_code"] is None
+    assert "limit" in r["error"]
+    assert rec["argv"] == []  # raw string never reaches argv
+
+
+def test_non_int_limit_rejected_on_reads_too(rec):
+    r = tools.MAIL_TOOL.dispatch("list", {"filter": {"limit": "50"}})
+    assert r["success"] is False
+    assert "limit" in r["error"]
+    assert rec["argv"] == []
+
+
+def test_int_limit_still_works(rec):
+    rec["proc"] = proc_json({"affected": 5})
+    r = tools.MAIL_TOOL.dispatch("trash", {"filter": {"subject": "x", "limit": 10}, "confirm": True})
+    assert r["success"] is True
+    args = tail_without_globals(rec["argv"])
+    i = args.index("--limit")
+    assert args[i + 1] == "10"
+
+
+def test_dry_run_validation_failure_next_step_says_validation(rec):
+    """Gated confirm=False + local validation error -> envelope says validation failed."""
+    r = tools.MAIL_TOOL.dispatch("move", {"refs": ["1"]})  # missing 'into', no confirm
+    assert r["success"] is False
+    assert r["applied"] is False
+    assert r["dry_run"] is True
+    assert r["preview"]["error"]
+    assert "validation" in r["next_step"].lower()
+    assert "dry-run failed" not in r["next_step"].lower()
+    assert rec["argv"] == []
+
+
+# --- calendar CLI contract (verified against `proton calendar ... --help`) --------
+
+
+def test_calendars_maps_to_settings_calendars_list(rec):
+    """There is no `proton calendar calendars` command; the real list lives
+    under `calendar settings calendars list`."""
+    tools.CALENDAR_TOOL.dispatch("calendars", {})
+    args = tail_without_globals(rec["argv"])
+    assert args[:4] == ["calendar", "settings", "calendars", "list"]
+    assert "--limit" not in args and "--page" not in args
+
+
+def test_calendars_limit_page(rec):
+    tools.CALENDAR_TOOL.dispatch("calendars", {"limit": 20, "page": 1})
+    args = tail_without_globals(rec["argv"])
+    i = args.index("--limit")
+    assert args[i + 1] == "20"
+    j = args.index("--page")
+    assert args[j + 1] == "1"
+
+
+def test_calendars_non_int_limit_rejected(rec):
+    r = tools.CALENDAR_TOOL.dispatch("calendars", {"limit": "20"})
+    assert r["success"] is False and "limit" in r["error"]
+    assert rec["argv"] == []
+
+
+def test_events_list_full_flag_map(rec):
+    tools.CALENDAR_TOOL.dispatch(
+        "events_list",
+        {"after": "2026-04-01", "before": "2026-04-30", "calendar": "Work",
+         "keyword": "dentist", "limit": 50, "page": 0},
+    )
+    args = tail_without_globals(rec["argv"])
+    assert args[:3] == ["calendar", "events", "list"]
+    for flag, val in [
+        ("--after", "2026-04-01"), ("--before", "2026-04-30"),
+        ("--calendar", "Work"), ("--keyword", "dentist"),
+        ("--limit", "50"), ("--page", "0"),
+    ]:
+        i = args.index(flag)
+        assert args[i + 1] == val
+
+
+def test_events_list_non_int_limit_rejected(rec):
+    r = tools.CALENDAR_TOOL.dispatch("events_list", {"limit": "50"})
+    assert r["success"] is False and "limit" in r["error"]
+    assert rec["argv"] == []
