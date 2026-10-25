@@ -88,7 +88,7 @@ def test_filter_keys_cover_contract(rec):
         "keyword": "kw",
         "has_attachments": True,
         "read": True,
-        "unread": False,
+        "unread": True,
         "starred": True,
         "after": "2026-01-01",
         "before": "2026-02-01",
@@ -389,3 +389,162 @@ def test_drive_list_and_trash_argv(rec):
 def test_unknown_action_raises(rec):
     with pytest.raises(ValueError):
         tools.MAIL_TOOL.dispatch("explode", {})
+
+
+# --- review fixes: applied/success correctness ----------------------------------
+
+
+def test_failed_real_run_sets_applied_false(rec):
+    rec["proc"] = make_proc(stdout="boom", returncode=5)
+    r = tools.MAIL_TOOL.dispatch("trash", {"refs": ["1"], "confirm": True})
+    assert r["success"] is False
+    assert r["applied"] is False
+
+
+def test_unknown_exit_code_branch(rec):
+    rec["proc"] = make_proc(stdout="weird", returncode=7)
+    r = tools.MAIL_TOOL.dispatch("trash", {"refs": ["1"], "confirm": True})
+    assert r["success"] is False
+    assert r["exit_code"] == 7
+    assert r["meaning"] is None
+    assert "Unexpected exit code" in r["error"]
+    assert r["applied"] is False
+
+
+def test_failed_dry_run_envelope_not_success(rec):
+    rec["proc"] = make_proc(stdout="bad", returncode=1)
+    r = tools.MAIL_TOOL.dispatch("trash", {"refs": ["1"], "confirm": False})
+    assert r["success"] is False
+    assert r["applied"] is False
+    assert r["dry_run"] is True
+    assert "fix" in r["next_step"].lower()
+    assert "approve" not in r["next_step"].lower()
+
+
+def test_success_dry_run_envelope_invites_approval(rec):
+    rec["proc"] = proc_json({"affected": 1})
+    r = tools.MAIL_TOOL.dispatch("trash", {"refs": ["1"], "confirm": False})
+    assert r["success"] is True
+    assert r["next_step"] == NEXT_STEP
+
+
+def test_empty_stdout_success_path(rec):
+    rec["proc"] = make_proc(stdout="")
+    r = tools.MAIL_TOOL.dispatch("trash", {"refs": ["1"], "confirm": True})
+    assert r["success"] is True
+    assert r["applied"] is True
+    assert r["raw"] == ""
+
+
+# --- boolean filter flags are bare switches -------------------------------------
+
+
+def test_boolean_flags_have_no_value_string(rec):
+    f = {
+        "has_attachments": True,
+        "read": True,
+        "unread": True,
+        "starred": True,
+        "subject": "x",
+    }
+    tools.MAIL_TOOL.dispatch("list", {"filter": f})
+    args = tail_without_globals(rec["argv"])
+    for flag in ["--has-attachments", "--read", "--unread", "--starred"]:
+        i = args.index(flag)
+        assert i + 1 == len(args) or not args[i + 1] in ("True", "False"), (flag, args[i:i + 2])
+    assert "True" not in args and "False" not in args
+
+
+def test_boolean_flag_false_is_omitted(rec):
+    tools.MAIL_TOOL.dispatch("list", {"filter": {"read": False, "starred": False, "subject": "x"}})
+    args = tail_without_globals(rec["argv"])
+    assert "--read" not in args and "--starred" not in args
+    assert "--subject" in args
+
+
+# --- null limit rails to default -------------------------------------------------
+
+
+def test_null_limit_defaults_to_150(rec):
+    tools.MAIL_TOOL.dispatch("trash", {"filter": {"subject": "x", "limit": None}, "confirm": True})
+    args = tail_without_globals(rec["argv"])
+    i = args.index("--limit")
+    assert args[i + 1] == "150"
+
+
+# --- missing id -> validation error, not KeyError --------------------------------
+
+
+@pytest.mark.parametrize(
+    "tool,action",
+    [
+        (tools.MAIL_TOOL, "get"),
+        (tools.CALENDAR_TOOL, "events_get"),
+        (tools.DRIVE_TOOL, "get"),
+    ],
+)
+def test_missing_id_is_validation_error(rec, tool, action):
+    r = tool.dispatch(action, {})
+    assert r["success"] is False
+    assert "id" in r["error"]
+    assert rec["argv"] == []
+
+
+# --- mark: explicit read/unread semantics ----------------------------------------
+
+
+def test_mark_unread_true_uses_unread(rec):
+    tools.MAIL_TOOL.dispatch("mark", {"refs": ["5"], "unread": True, "confirm": True})
+    args = tail_without_globals(rec["argv"])
+    assert args[:4] == ["mail", "messages", "mark", "unread"]
+
+
+def test_mark_read_false_unread_true(rec):
+    tools.MAIL_TOOL.dispatch("mark", {"refs": ["5"], "read": False, "unread": True, "confirm": True})
+    args = tail_without_globals(rec["argv"])
+    assert args[3] == "unread"
+
+
+def test_mark_needs_a_true_flag(rec):
+    r = tools.MAIL_TOOL.dispatch("mark", {"refs": ["5"], "read": False, "unread": False, "confirm": True})
+    assert r["success"] is False
+
+
+# --- drive download (read action) -------------------------------------------------
+
+
+def test_drive_download_argv_shape(rec):
+    rec["proc"] = make_proc(stdout="")
+    r = tools.DRIVE_TOOL.dispatch("download", {"path": "/Documents/report.pdf", "dest_dir": "/tmp/out"})
+    args = tail_without_globals(rec["argv"])
+    assert args[:4] == ["drive", "items", "download", "/Documents/report.pdf"]
+    i = args.index("--dest-dir")
+    assert args[i + 1] == "/tmp/out"
+    assert "--dry-run" not in rec["argv"]
+    assert r["success"] is True
+
+
+def test_drive_download_recursive(rec):
+    tools.DRIVE_TOOL.dispatch(
+        "download", {"path": "/Docs", "dest_dir": ".", "recursive": True, "force": True}
+    )
+    args = tail_without_globals(rec["argv"])
+    assert "--recursive" in args and "--force" in args
+
+
+def test_drive_download_requires_dest_dir(rec):
+    r = tools.DRIVE_TOOL.dispatch("download", {"path": "/x"})
+    assert r["success"] is False
+    assert "dest_dir" in r["error"]
+    assert rec["argv"] == []
+
+
+def test_drive_download_requires_path(rec):
+    r = tools.DRIVE_TOOL.dispatch("download", {"dest_dir": "."})
+    assert r["success"] is False
+    assert "path" in r["error"]
+
+
+def test_drive_download_never_in_dispatched_dry_run(rec):
+    tools.DRIVE_TOOL.dispatch("download", {"path": "/x", "dest_dir": ".", "confirm": False})
+    assert "--dry-run" not in rec["argv"]

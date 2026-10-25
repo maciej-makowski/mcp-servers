@@ -21,22 +21,35 @@ DEFAULT_BULK_LIMIT = 150
 
 NEXT_STEP = "Nothing changed. Ask user to approve, then call again with confirm=true."
 
+# Belt-and-braces: the LAST_ARGV check is post-hoc -- it reads the runner's
+# recorded argv *after* subprocess.run has returned, never during. A
+# single-loop (non-threaded) MCP server therefore never races on it; if the
+# server ever gains a thread pool, this check needs its own lock instead.
+#
+# Boolean CLI flags: read/unread/starred/has-attachments (and --all) are bare
+# switches per `proton mail messages list --help` -- they take no value, so
+# booleans are emitted as flag-present (a False value omits the flag), never
+# as `--flag True`.
 FILTER_FLAG_MAP = {
     "folder": "--folder",
     "from": "--from",
     "to": "--to",
     "subject": "--subject",
     "keyword": "--keyword",
-    "has_attachments": "--has-attachments",
-    "read": "--read",
-    "unread": "--unread",
-    "starred": "--starred",
     "after": "--after",
     "before": "--before",
     "older_than": "--older-than",
     "newer_than": "--newer-than",
     "limit": "--limit",
     "all": "--all",
+}
+
+# Bare-switch flags: emitted when truthy, omitted when falsy/None.
+BOOLEAN_FILTER_FLAG_MAP = {
+    "has_attachments": "--has-attachments",
+    "read": "--read",
+    "unread": "--unread",
+    "starred": "--starred",
 }
 
 # Keys of a filter object (limit/all handled separately by bulk rails).
@@ -49,6 +62,9 @@ def _map_filter(f: dict) -> list[str]:
     for key in FILTER_ONLY_KEYS:
         if key in f and f[key] is not None:
             argv += [FILTER_FLAG_MAP[key], str(f[key])]
+    for key, flag in BOOLEAN_FILTER_FLAG_MAP.items():
+        if f.get(key):
+            argv.append(flag)  # bare switch: no value
     return argv
 
 
@@ -58,14 +74,20 @@ def _result(data: dict, **extra) -> dict:
     return out
 
 
+DRY_RUN_FAILED_NEXT_STEP = (
+    "Nothing changed. The dry-run failed: fix the cause (see preview) before retrying."
+)
+
+
 def _dry_run_envelope(action: str, preview: dict) -> dict:
+    failed = not preview.get("success", False)
     return {
-        "success": True,
+        "success": preview.get("success", False),
         "applied": False,
         "dry_run": True,
         "action": action,
         "preview": preview,
-        "next_step": NEXT_STEP,
+        "next_step": DRY_RUN_FAILED_NEXT_STEP if failed else NEXT_STEP,
     }
 
 
@@ -93,7 +115,7 @@ class _BaseTool:
             res = self._mutate(action, params)
             return _result(
                 res,
-                applied=True,
+                applied=res.get("success", False),
                 dry_run=False,
                 action=action,
             )
@@ -112,7 +134,7 @@ class _BaseTool:
 
     def _run(self, args: list[str], dry_run: bool = False, stdin_text: str | None = None) -> dict:
         res = runner.run(args, stdin_text=stdin_text, dry_run=dry_run)
-        if dry_run and "--dry-run" not in (runner.LAST_ARGV or []):
+        if dry_run and (runner.LAST_ARGV or [])[-1:] != ["--dry-run"]:
             raise RuntimeError(
                 "runner dropped --dry-run; refusing to proceed (belt-and-braces check)."
             )
@@ -143,6 +165,8 @@ class MailTool(_BaseTool):
                 args += _map_filter(params["filter"])
             return self._run(args)
         if action == "get":
+            if not params.get("id"):
+                return self._validation_error("get requires 'id'")
             return self._run(["mail", "messages", "get", str(params["id"])])
         raise ValueError(f"unknown read action {action!r} for mail")
 
@@ -171,8 +195,12 @@ class MailTool(_BaseTool):
             if not params.get("label"):
                 return self._validation_error(f"{action} requires 'label'")
         elif action == "mark":
-            if "read" not in params and "unread" not in params:
-                return self._validation_error("mark requires 'read' or 'unread' (boolean)")
+            # Explicit semantics: mark read only when params["read"] is True;
+            # mark unread when params["unread"] is True (this includes
+            # read=False + unread=True). Both False / neither True -> error,
+            # so truthiness can never silently pick a direction.
+            if params.get("read") is not True and params.get("unread") is not True:
+                return self._validation_error("mark requires 'read': true or 'unread': true")
         elif action != "trash":
             raise ValueError(f"unknown gated action {action!r} for mail")
 
@@ -184,7 +212,7 @@ class MailTool(_BaseTool):
         elif action == "unlabel":
             argv_extra = ["--label", str(params["label"])]
         elif action == "mark":
-            argv_extra = ["read" if params.get("read") else "unread"]
+            argv_extra = ["read" if params.get("read") is True else "unread"]
 
         args = ["mail", "messages", action]
         if action == "mark":
@@ -210,13 +238,17 @@ class MailTool(_BaseTool):
 
     @staticmethod
     def _bulk_rails(filt: dict) -> list[str]:
-        """Bulk rails: enforce --limit 150 unless all=True or explicit limit."""
+        """Bulk rails: enforce --limit 150 unless all=True or explicit limit.
+
+        An explicit limit of None is treated as absent (rails to the default);
+        only an integer limit skips the rail.
+        """
         args: list[str] = []
         if filt.get("all"):
             args.append("--all")
-        elif "limit" not in filt:
+        elif filt.get("limit") is None:
             args += ["--limit", str(DEFAULT_BULK_LIMIT)]
-        elif filt.get("limit") is not None:
+        else:
             args += ["--limit", str(filt["limit"])]
         return args
 
@@ -235,6 +267,8 @@ class CalendarTool(_BaseTool):
                 args += ["--calendar", str(params["calendar"])]
             return self._run(args)
         if action == "events_get":
+            if not params.get("id"):
+                return self._validation_error("events_get requires 'id'")
             return self._run(["calendar", "events", "get", str(params["id"])])
         raise ValueError(f"unknown read action {action!r} for calendar")
 
@@ -278,7 +312,24 @@ class DriveTool(_BaseTool):
                 args += ["--dir", str(params["dir"])]
             return self._run(args)
         if action == "get":
+            if not params.get("id"):
+                return self._validation_error("get requires 'id'")
             return self._run(["drive", "get", str(params["id"])])
+        if action == "download":
+            path = params.get("path")
+            if not path:
+                return self._validation_error("download requires 'path' (drive item path)")
+            dest_dir = params.get("dest_dir")
+            if not dest_dir:
+                return self._validation_error("download requires 'dest_dir' (local directory)")
+            args = ["drive", "items", "download", str(path), "--dest-dir", str(dest_dir)]
+            if params.get("recursive"):
+                args.append("--recursive")
+            if params.get("force"):
+                args.append("--force")
+            # Download is a read (writes only into the caller-named dir):
+            # never issued with --dry-run, so no belt-and-braces check.
+            return self._run(args)
         raise ValueError(f"unknown read action {action!r} for drive")
 
     def _mutate(self, action: str, params: dict, dry_run: bool = False) -> dict:
