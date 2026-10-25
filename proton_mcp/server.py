@@ -145,7 +145,10 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "desc": {"type": "boolean", "description": "Reverse the order (list/albums)"},
             "ref": {
                 "type": "string",
-                "description": "Photo link_id (download; single-photo form of refs)",
+                "description": (
+                    "Photo link_id (download; canonical). 'id' is accepted as an "
+                    "alias for 'ref' on download and single-photo gated actions"
+                ),
             },
             "dest_dir": {
                 "type": "string",

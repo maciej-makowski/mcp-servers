@@ -15,13 +15,15 @@ Photos have NO filename field in the CLI's JSON — address them by link_id
 streams raw binary to stdout (verified), which the JSON runner cannot
 convey, so downloads always go to --dest-dir and there is deliberately no
 `get` action: the CLI exposes no per-photo metadata verb.
+
+Shared helpers live in .base (imported by tools.py too), so this module
+imports cleanly on its own — no circular import through tools.
 """
 
 from __future__ import annotations
 
 from . import runner
-from .tools import _BaseTool, _limit_error, _result
-
+from .base import _BaseTool, _limit_error, _refs_error
 
 # Tag enum from `proton drive photos list --help`.
 PHOTO_TAGS = frozenset(
@@ -40,6 +42,30 @@ PHOTO_TAGS = frozenset(
 )
 
 
+def _list_flags(params: dict) -> tuple[list[str], str | None]:
+    """Shared flag mapping for `photos list` and `photos albums list`.
+
+    Handles the flags both verbs accept (--limit/--page/--sort/--desc, plus
+    the limit rail). Returns (argv_suffix, error); on error argv_suffix is
+    empty and the caller returns a validation failure. list-only flags
+    (--album, --tag) are mapped by the caller.
+    """
+    args: list[str] = []
+    if params.get("sort") is not None:
+        args += ["--sort", str(params["sort"])]
+    limit = params.get("limit")
+    if limit is not None:
+        err = _limit_error({"limit": limit})
+        if err:
+            return [], err
+        args += ["--limit", str(limit)]
+    if params.get("page") is not None:
+        args += ["--page", str(params["page"])]
+    if params.get("desc"):
+        args.append("--desc")
+    return args, None
+
+
 class PhotosTool(_BaseTool):
     """Actions on `proton drive photos`."""
 
@@ -48,9 +74,8 @@ class PhotosTool(_BaseTool):
     def _read(self, action: str, params: dict) -> dict:
         if action == "list":
             args = ["drive", "photos", "list"]
-            for key, flag in (("album", "--album"), ("sort", "--sort")):
-                if params.get(key) is not None:
-                    args += [flag, str(params[key])]
+            if params.get("album") is not None:
+                args += ["--album", str(params["album"])]
             tag = params.get("tag")
             if tag is not None:
                 if tag not in PHOTO_TAGS:
@@ -58,37 +83,23 @@ class PhotosTool(_BaseTool):
                         f"unknown tag {tag!r}; valid tags: {', '.join(sorted(PHOTO_TAGS))}"
                     )
                 args += ["--tag", tag]
-            limit = params.get("limit")
-            if limit is not None:
-                err = _limit_error({"limit": limit})
-                if err:
-                    return self._validation_error(err)
-                args += ["--limit", str(limit)]
-            if params.get("page") is not None:
-                args += ["--page", str(params["page"])]
-            if params.get("desc"):
-                args.append("--desc")
-            return self._run(args)
+            suffix, err = _list_flags(params)
+            if err:
+                return self._validation_error(err)
+            return self._run(args + suffix)
 
         if action == "albums":
             # `albums` remaps to `drive photos albums list` (no bare
             # `drive photos albums` verb exists).
             args = ["drive", "photos", "albums", "list"]
-            if params.get("sort") is not None:
-                args += ["--sort", str(params["sort"])]
-            limit = params.get("limit")
-            if limit is not None:
-                err = _limit_error({"limit": limit})
-                if err:
-                    return self._validation_error(err)
-                args += ["--limit", str(limit)]
-            if params.get("page") is not None:
-                args += ["--page", str(params["page"])]
-            if params.get("desc"):
-                args.append("--desc")
-            return self._run(args)
+            suffix, err = _list_flags(params)
+            if err:
+                return self._validation_error(err)
+            return self._run(args + suffix)
 
         if action == "download":
+            # 'id' is accepted as an alias for 'ref' (documented in the
+            # MCP schema description); 'ref' is the canonical form.
             ref = params.get("ref") or params.get("id")
             if not ref:
                 return self._validation_error("download requires 'ref' (photo link_id)")
@@ -116,7 +127,15 @@ class PhotosTool(_BaseTool):
             return self._validation_error(
                 f"{action} accepts either 'ref' or 'refs' (list of link_ids), not both"
             )
-        if single:
+        if refs:
+            # I1: reject non-list refs (a string would be iterated
+            # per-character and act on garbage ids — fatal for PERMANENT
+            # delete).
+            err = _refs_error(refs)
+            if err:
+                return self._validation_error(f"{action}: {err}")
+            refs = list(refs)
+        elif single:
             refs = [single]
         if not refs:
             return self._validation_error(
