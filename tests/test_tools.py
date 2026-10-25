@@ -369,14 +369,14 @@ def test_upload_validates_local_path(rec, tmp_path):
     assert rec["argv"] == []
 
 
-def test_upload_existing_path_uses_file_flag(rec, tmp_path):
+def test_upload_existing_path_uses_positional_args(rec, tmp_path):
     f = tmp_path / "real.txt"
     f.write_text("hi")
     rec["proc"] = proc_json({"id": "9"})
     r = tools.DRIVE_TOOL.dispatch("upload", {"path": str(f), "dir": "/docs", "confirm": True})
     args = tail_without_globals(rec["argv"])
-    assert "--file" in args and str(f) in args
-    assert "--dir" in args and "/docs" in args
+    assert args[:3] == ["drive", "items", "upload"] and str(f) in args
+    assert args[-1] == "/docs" and "--file" not in args and "--dir" not in args
     assert r["applied"] is True
 
 
@@ -430,12 +430,12 @@ def test_calendar_events_list_passes_calendar(rec):
 def test_drive_list_and_trash_argv(rec):
     tools.DRIVE_TOOL.dispatch("list", {"dir": "/docs"})
     args = tail_without_globals(rec["argv"])
-    assert args[:2] == ["drive", "list"] and "--dir" in args
+    assert args[:3] == ["drive", "items", "list"] and "/docs" in args and "--dir" not in args
 
     rec["argv"] = []
     tools.DRIVE_TOOL.dispatch("trash", {"refs": ["9"], "confirm": True})
     args = tail_without_globals(rec["argv"])
-    assert args[:3] == ["drive", "trash", "9"]
+    assert args[:4] == ["drive", "items", "trash", "9"]
 
 
 # --- unknown action ----------------------------------------------------------------

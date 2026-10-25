@@ -396,14 +396,15 @@ class DriveTool(_BaseTool):
 
     def _read(self, action: str, params: dict) -> dict:
         if action == "list":
-            args = ["drive", "list"]
+            args = ["drive", "items", "list"]
             if params.get("dir"):
-                args += ["--dir", str(params["dir"])]
+                # CLI takes the drive folder as a positional PATH, not a flag.
+                args.append(str(params["dir"]))
             return self._run(args)
         if action == "get":
             if not params.get("id"):
                 return self._validation_error("get requires 'id'")
-            return self._run(["drive", "get", str(params["id"])])
+            return self._run(["drive", "items", "get", str(params["id"])])
         if action == "download":
             path = params.get("path")
             if not path:
@@ -428,15 +429,15 @@ class DriveTool(_BaseTool):
                 return self._validation_error("upload requires 'path' (local file)")
             if not Path(path).exists():
                 return self._validation_error(f"local file not found: {path}")
-            args = ["drive", "upload", "--file", str(path)]
+            args = ["drive", "items", "upload", str(path)]
             if params.get("dir"):
-                args += ["--dir", str(params["dir"])]
+                args.append(str(params["dir"]))  # CLI: positional DEST
             return self._run(args, dry_run=dry_run)
         if action == "trash":
             refs = params.get("refs") or ([params["id"]] if params.get("id") else None)
             if not refs:
                 return self._validation_error("trash requires 'refs' (list of ids) or 'id'")
-            return self._run(["drive", "trash", *[str(r) for r in refs]], dry_run=dry_run)
+            return self._run(["drive", "items", "trash", *[str(r) for r in refs]], dry_run=dry_run)
         raise ValueError(f"unknown gated action {action!r} for drive")
 
 
