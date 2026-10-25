@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
 import mcp_types as types
@@ -253,6 +254,11 @@ async def _run_stdio() -> None:
 
 def main() -> None:
     """Entry point: serve the three tools over MCP stdio until stdin EOF."""
+    # Update-check off by default for this server's CLI subprocesses (the CLI's
+    # self-update path cannot be verified offline; updates are manual). An env
+    # var set in the MCP config would also work, but Hermes config env values
+    # round-trip as YAML ints, which the stdio schema rejects.
+    os.environ.setdefault("PROTON_NO_UPDATE_CHECK", "1")
     asyncio.run(_run_stdio())
 
 
