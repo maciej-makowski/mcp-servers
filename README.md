@@ -46,6 +46,7 @@ mcp_servers:
     args: ["-m", "proton_mcp.server"]
     env:
       PROTON_NO_UPDATE_CHECK: "1"
+    timeout: 120
 ```
 
 Log in once, user-only (never automate this — password + 2FA):
