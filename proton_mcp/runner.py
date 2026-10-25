@@ -13,6 +13,9 @@ from pathlib import Path
 
 PROTON_BIN = Path.home() / ".hermes" / "bin" / "proton"
 
+# Full argv of the last subprocess invocation (for belt-and-braces checks).
+LAST_ARGV: list[str] | None = None
+
 EXIT_MEANINGS = {
     0: "ok",
     1: "bad-argument",
@@ -60,6 +63,9 @@ def run(
     argv = [str(PROTON_BIN), *args, "--output", "json", "--no-input"]
     if dry_run:
         argv.append("--dry-run")
+
+    global LAST_ARGV
+    LAST_ARGV = list(argv)
 
     try:
         proc = subprocess.run(
