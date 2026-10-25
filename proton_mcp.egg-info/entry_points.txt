@@ -1,2 +1,0 @@
-[console_scripts]
-proton-mcp = proton_mcp.server:main

@@ -9,6 +9,9 @@ description = "MCP server wrapping the proton-cli Go binary"
 requires-python = ">=3.10"
 dependencies = ["mcp"]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [project.scripts]
 proton-mcp = "proton_mcp.server:main"
 

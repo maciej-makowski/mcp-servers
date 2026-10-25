@@ -1,6 +1,0 @@
-Metadata-Version: 2.4
-Name: proton-mcp
-Version: 0.1.0
-Summary: MCP server wrapping the proton-cli Go binary
-Requires-Python: >=3.10
-Requires-Dist: mcp
