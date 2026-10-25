@@ -185,12 +185,14 @@ def test_search_requires_query(rec):
 
 
 def test_search_with_filter_passthrough(rec):
+    """Filter flags pass through verbatim (limit/all are bulk rails, not
+    read filters, so they are not forwarded here)."""
     tools.MAIL_TOOL.dispatch(
         "search", {"query": "invoice", "filter": {"folder": "all", "limit": 50}}
     )
     args = tail_without_globals(rec["argv"])
     assert args[:3] == ["mail", "messages", "list"]
-    assert ["--keyword", "invoice", "--folder", "all", "--limit", "50"] == args[3:]
+    assert ["--keyword", "invoice", "--folder", "all"] == args[3:]
 
 
 def test_read_with_confirm_param_ignores_it(rec):
