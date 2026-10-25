@@ -182,7 +182,14 @@ class MailTool(_BaseTool):
 
     def _read(self, action: str, params: dict) -> dict:
         if action == "status":
-            return self._run(["mail", "status"])
+            # `mail status` doesn't exist in the CLI; remap to
+            # `mail messages count` (per-folder/label counts). `count`
+            # only supports --folder, so map just that filter key.
+            args = ["mail", "messages", "count"]
+            folder = (params.get("filter") or {}).get("folder")
+            if folder is not None:
+                args += ["--folder", str(folder)]
+            return self._run(args)
         if action == "list":
             args = ["mail", "messages", "list"]
             if "filter" in params:
@@ -192,9 +199,14 @@ class MailTool(_BaseTool):
                 args += _map_filter(params["filter"])
             return self._run(args)
         if action == "search":
-            args = ["mail", "messages", "search"]
-            if "query" in params:
-                args += [str(params["query"])]
+            # The CLI has no `search` verb; its search mechanism is
+            # `mail messages list --keyword <query>`. Keep the action
+            # name for callers, emit list argv, pass other filter
+            # flags through unchanged.
+            query = params.get("query")
+            if not query:
+                return self._validation_error("search requires 'query'")
+            args = ["mail", "messages", "list", "--keyword", str(query)]
             if "filter" in params:
                 err = _limit_error(params["filter"])
                 if err:

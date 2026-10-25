@@ -140,6 +140,59 @@ def test_reads_never_dry_run(rec, call):
     assert runner.LAST_ARGV == rec["argv"]
 
 
+# --- status/search remap to real CLI verbs --------------------------------------
+
+
+def test_status_remaps_to_mail_messages_count(rec):
+    """`status` doesn't exist in the CLI; remap to `mail messages count`."""
+    tools.MAIL_TOOL.dispatch("status", {})
+    assert tail_without_globals(rec["argv"]) == ["mail", "messages", "count"]
+
+
+def test_status_with_folder_filter_maps_to_count_folder(rec):
+    tools.MAIL_TOOL.dispatch("status", {"filter": {"folder": "Receipts"}})
+    args = tail_without_globals(rec["argv"])
+    assert args[:3] == ["mail", "messages", "count"]
+    assert ["--folder", "Receipts"] == args[3:]
+
+
+def test_status_ignores_non_folder_filter_keys(rec):
+    """count only supports --folder; other filter keys don't apply."""
+    tools.MAIL_TOOL.dispatch("status", {"filter": {"folder": "Inbox", "limit": 5}})
+    assert tail_without_globals(rec["argv"]) == [
+        "mail",
+        "messages",
+        "count",
+        "--folder",
+        "Inbox",
+    ]
+
+
+def test_search_remaps_to_list_keyword(rec):
+    """The CLI has no `search` verb; search is `mail messages list --keyword`."""
+    tools.MAIL_TOOL.dispatch("search", {"query": "invoice"})
+    args = tail_without_globals(rec["argv"])
+    assert args[:3] == ["mail", "messages", "list"]
+    assert "--keyword" in args
+    assert "invoice" in args
+
+
+def test_search_requires_query(rec):
+    r = tools.MAIL_TOOL.dispatch("search", {})
+    assert r["success"] is False
+    assert r["validation"] is True
+    assert "query" in r["error"]
+
+
+def test_search_with_filter_passthrough(rec):
+    tools.MAIL_TOOL.dispatch(
+        "search", {"query": "invoice", "filter": {"folder": "all", "limit": 50}}
+    )
+    args = tail_without_globals(rec["argv"])
+    assert args[:3] == ["mail", "messages", "list"]
+    assert ["--keyword", "invoice", "--folder", "all", "--limit", "50"] == args[3:]
+
+
 def test_read_with_confirm_param_ignores_it(rec):
     """Reads must not gain --dry-run even if a stray confirm key is present."""
     tools.MAIL_TOOL.dispatch("list", {"confirm": False})
