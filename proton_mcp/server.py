@@ -1,11 +1,244 @@
-"""MCP server entry point. Stub — tool wiring lands in Task 3+."""
+"""MCP stdio server exposing Proton Mail, Calendar and Drive as 3 tools.
+
+Built on the `mcp` SDK's low-level `Server` (v2 API — FastMCP was renamed to
+MCPServer and the v1 decorator API is gone; the low-level Server with
+on_list_tools / on_call_tool handlers is the version-stable surface).
+
+Schemas are built from the tool layer's own action tables, so reads and gated
+(mutating) actions can never drift apart. Gated tools carry an explicit
+`confirm` boolean (default false, mirroring the tool layer's gating):
+confirm=false -> the CLI runs with --dry-run and returns a preview envelope;
+confirm=true -> the action runs for real.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import json
+from typing import Any
+
+import mcp_types as types
+from mcp.server import lowlevel
+from mcp.server.stdio import stdio_server
+
+from . import tools
+
+SERVER_NAME = "proton-mcp"
+
+GATING_DOC = (
+    "Read actions run directly. Gated (mutating) actions are double-keyed: "
+    "call with confirm=false (default) first — the CLI runs with --dry-run and "
+    "returns a preview envelope {applied:false, dry_run:true, preview, "
+    "next_step}; show the preview to the user, and only re-call with "
+    "confirm=true after explicit approval to run it for real."
+)
+
+# Action tables mirror proton_mcp.tools exactly.
+TOOL_SPECS: dict[str, dict[str, Any]] = {
+    "proton_mail": {
+        "tool": tools.MAIL_TOOL,
+        "description": (
+            "Proton Mail via proton-cli: reads status/list/search/get, gated "
+            "send/move/label/unlabel/mark/trash (bulk-capable via filter). "
+            + GATING_DOC
+        ),
+        "reads": ("status", "list", "search", "get"),
+        "gated": ("send", "move", "label", "unlabel", "mark", "trash"),
+        "filter": True,
+        "extra_params": {
+            "query": {"type": "string", "description": "Search query (search action)"},
+            "id": {"type": "string", "description": "Message id (get action)"},
+            "to": {"type": "string", "description": "Recipient address (send)"},
+            "subject": {"type": "string", "description": "Subject line (send)"},
+            "body": {"type": "string", "description": "Body text, piped over stdin (send)"},
+            "refs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Explicit message ids for a bulk gated action (exclusive with filter)",
+            },
+            "into": {"type": "string", "description": "Destination folder (move)"},
+            "label": {"type": "string", "description": "Label name (label/unlabel)"},
+            "read": {"type": "boolean", "description": "mark: set read (mark only, true required)"},
+            "unread": {"type": "boolean", "description": "mark: set unread (mark only, true required)"},
+        },
+    },
+    "proton_calendar": {
+        "tool": tools.CALENDAR_TOOL,
+        "description": (
+            "Proton Calendar via proton-cli: reads calendars/events_list/"
+            "events_get, gated events_create/events_delete. " + GATING_DOC
+        ),
+        "reads": ("calendars", "events_list", "events_get"),
+        "gated": ("events_create", "events_delete"),
+        "filter": False,
+        "extra_params": {
+            "id": {"type": "string", "description": "Event reference (events_get/events_delete)"},
+            "title": {"type": "string", "description": "Event title (events_create)"},
+            "start": {"type": "string", "description": "Start, e.g. 2026-04-16T14:00 (events_create)"},
+            "end": {"type": "string", "description": "End, e.g. 2026-04-16T15:00 (events_create)"},
+            "description": {"type": "string", "description": "Event description (events_create)"},
+            "calendar": {"type": "string", "description": "Calendar by name or ID (events_list)"},
+            "after": {"type": "string", "description": "First day to include, YYYY-MM-DD (events_list)"},
+            "before": {"type": "string", "description": "Last day to include, YYYY-MM-DD (events_list)"},
+            "keyword": {"type": "string", "description": "Text match in title/location/description (events_list)"},
+            "limit": {"type": "integer", "description": "Per-page count; 0 for all (events_list/calendars)"},
+            "page": {"type": "integer", "description": "Page number, from zero (events_list/calendars)"},
+        },
+    },
+    "proton_drive": {
+        "tool": tools.DRIVE_TOOL,
+        "description": (
+            "Proton Drive via proton-cli: reads list/get/download, gated "
+            "upload/trash. " + GATING_DOC
+        ),
+        "reads": ("list", "get", "download"),
+        "gated": ("upload", "trash"),
+        "filter": False,
+        "extra_params": {
+            "id": {"type": "string", "description": "Item id (get)"},
+            "dir": {"type": "string", "description": "Drive directory (list) or destination dir (upload)"},
+            "path": {"type": "string", "description": "Drive item path (download) or local file (upload)"},
+            "dest_dir": {"type": "string", "description": "Local directory to download into"},
+            "recursive": {"type": "boolean", "description": "Download directories recursively"},
+            "force": {"type": "boolean", "description": "Overwrite existing local files"},
+            "refs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Item ids to trash",
+            },
+        },
+    },
+}
+
+# Filter object schema: mirrors the mail filter keys exactly (13 value flags
+# + booleans + the bulk rails' limit/all).
+_FILTER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "description": (
+        "Filter scope for list/search/bulk gated actions. Booleans are bare "
+        "switches (truthy only). Bulk gated actions are always limited: "
+        "default --limit 150 unless an integer limit or all=true (all also "
+        "needs confirm=true)."
+    ),
+    "properties": {
+        "folder": {"type": "string"},
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "subject": {"type": "string"},
+        "keyword": {"type": "string"},
+        "after": {"type": "string"},
+        "before": {"type": "string"},
+        "older_than": {"type": "string"},
+        "newer_than": {"type": "string"},
+        "has_attachments": {"type": "boolean"},
+        "read": {"type": "boolean"},
+        "unread": {"type": "boolean"},
+        "starred": {"type": "boolean"},
+        "limit": {"type": "integer", "description": "Bulk rail cap; default 150 unless given"},
+        "all": {
+            "type": "boolean",
+            "description": "Explicit unbounded bulk run; also requires confirm=true",
+        },
+    },
+}
+
+
+def build_input_schema(spec_name: str) -> dict[str, Any]:
+    """Build the JSON schema for one registered tool from its action tables."""
+    spec = TOOL_SPECS[spec_name]
+    props: dict[str, Any] = {
+        "action": {
+            "type": "string",
+            "enum": [*spec["reads"], *spec["gated"]],
+            "description": "One of the actions listed in the enum; reads and gated actions are separate.",
+        },
+        "params": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": "Action-specific parameters (see each action's needs).",
+            "properties": (
+                {"filter": _FILTER_SCHEMA, **spec["extra_params"]}
+                if spec["filter"]
+                else spec["extra_params"]
+            ),
+        },
+    }
+    if spec["gated"]:
+        # confirm lives ONLY on gated tools' schemas and defaults to false.
+        props["confirm"] = {
+            "type": "boolean",
+            "default": False,
+            "description": (
+                "false (default): gated actions run as a --dry-run preview, nothing changes. "
+                "true: run for real — only after the user explicitly approved the preview."
+            ),
+        }
+    return {"type": "object", "properties": props, "required": ["action"]}
+
+
+INPUT_SCHEMAS = {name: build_input_schema(name) for name in TOOL_SPECS}
+
+
+async def call_tool_impl(name: str, arguments: dict[str, Any]) -> dict:
+    """Dispatch an MCP tool call to the tool layer (testable without stdio)."""
+    if name not in TOOL_SPECS:
+        raise ValueError(f"unknown tool {name!r}")
+    arguments = dict(arguments or {})
+    action = arguments.get("action")
+    if not isinstance(action, str):
+        raise ValueError("params 'action' (string) is required")
+    params = dict(arguments.get("params") or {})
+    if not isinstance(params, dict):
+        raise ValueError("'params' must be an object")
+    if "confirm" in INPUT_SCHEMAS[name]["properties"]:
+        # confirm is a top-level tool argument, the tool layer expects it
+        # merged into params.
+        params["confirm"] = bool(arguments.get("confirm", False))
+    return TOOL_SPECS[name]["tool"].dispatch(action, params)
+
+
+def make_server() -> lowlevel.Server:
+    """Build the low-level MCP Server with list/call tool handlers."""
+
+    async def on_list_tools(ctx, params) -> types.ListToolsResult:
+        return types.ListToolsResult(
+            tools=[
+                types.Tool(
+                    name=name,
+                    description=TOOL_SPECS[name]["description"],
+                    input_schema=INPUT_SCHEMAS[name],
+                )
+                for name in TOOL_SPECS
+            ]
+        )
+
+    async def on_call_tool(ctx, params) -> types.CallToolResult:
+        name = params.name
+        try:
+            result = await call_tool_impl(name, dict(params.arguments or {}))
+        except ValueError as exc:
+            raise ValueError(f"invalid arguments for {name}: {exc}") from exc
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=json.dumps(result))]
+        )
+
+    return lowlevel.Server(
+        SERVER_NAME,
+        on_list_tools=on_list_tools,
+        on_call_tool=on_call_tool,
+    )
+
+
+async def _run_stdio() -> None:
+    server = make_server()
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
+
 
 def main() -> None:
-    """Entry point for the stdio MCP server (not yet implemented)."""
-    raise NotImplementedError("MCP server wiring arrives in a later task")
+    """Entry point: serve the three tools over MCP stdio until stdin EOF."""
+    asyncio.run(_run_stdio())
 
 
 if __name__ == "__main__":
