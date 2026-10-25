@@ -1,6 +1,6 @@
 # proton-mcp
 
-A local, self-written **stdio MCP server** that wraps [`proton-cli`](https://github.com/roman-16/proton-cli) and exposes **Proton Mail, Calendar and Drive** to an MCP client (e.g. [Hermes Agent](https://hermes-agent.nousresearch.com/docs)) as three tools: `proton_mail`, `proton_calendar`, `proton_drive`.
+A local, self-written **stdio MCP server** that wraps [`proton-cli`](https://github.com/roman-16/proton-cli) and exposes **Proton Mail, Calendar, Drive and Photos** to an MCP client (e.g. [Hermes Agent](https://hermes-agent.nousresearch.com/docs)) as four tools: `proton_mail`, `proton_calendar`, `proton_drive`, `proton_photos`.
 
 No third-party plugin: the wrapper is small, owned, and testable. Every mutating action is structurally gated behind an explicit `confirm` boolean that defaults to a CLI `--dry-run` — nothing can change without explicit approval. The server never sees or stores credentials; authentication lives entirely inside proton-cli's own interactive login.
 
@@ -62,8 +62,18 @@ Log in once, user-only (never automate this — password + 2FA):
 | `proton_mail` | `status`, `list`, `search`, `get` | `send`, `move`, `label`, `unlabel`, `mark`, `trash` |
 | `proton_calendar` | `calendars`, `events_list`, `events_get` | `events_create`, `events_delete` |
 | `proton_drive` | `list`, `get`, `download` | `upload`, `trash` |
+| `proton_photos` | `list`, `albums`, `download` | `trash`, `delete`, `favorite`, `unfavorite` |
 
 Every call takes `{"action": ..., "params": {...}}`. `download` is a read but writes locally — only into a caller-named `dest_dir`.
+
+### Photos (`proton_photos`)
+
+- Reads: `list` (flags `album`, `tag`, `limit`, `page`, `sort`, `desc`), `albums` (maps to `drive photos albums list`; sorts by `name` or `photos`), and `download` (a `ref` link_id + a required `dest_dir`, optional `force`).
+- Gated: `trash`, `delete`, `favorite`, `unfavorite` — each takes `ref` (single) or `refs` (list) of photo link_ids.
+- **No filenames:** the CLI's photo objects have no filename field. Address photos by `link_id` (from `list` results) or by `capture_time` via a list query. Because of this, `download` takes a caller-named `dest_dir` (like the Drive tool), and there is no `get` action: `download --dest -` streams raw binary to stdout (verified), which the JSON runner cannot convey, and the CLI exposes no per-photo metadata verb.
+- **`delete` is PERMANENT** — photos are removed outright, not moved to trash. Every dry-run preview response for `delete` carries a `warning` to that effect.
+- Album management (`albums create/add/remove/update/delete/share`) and photo upload/links/share are deliberately not exposed yet; only `albums list` is wired.
+- The drive library (`drive items list`) is separate from the photo library and cannot be mounted/browsed as photos — the CLI keeps them in disjoint namespaces.
 
 **Caveat:** the `status` action is remapped to `proton mail messages count`, whose CLI verb supports **only `--folder`** — no other filter key maps to it. Filter keys other than `folder` are silently dropped for `status`; use `list`/`search` for full filter support.
 
