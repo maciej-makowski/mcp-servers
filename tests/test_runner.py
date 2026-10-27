@@ -21,7 +21,7 @@ def make_proc(stdout: str = "", stderr: str = "", returncode: int = 0) -> FakeCo
 
 
 @pytest.fixture
-def recorder(monkeypatch):
+def recorder(monkeypatch, tmp_path):
     """Replace subprocess.run with a recorder returning a canned proc."""
     calls: dict = {}
 
@@ -33,6 +33,13 @@ def recorder(monkeypatch):
         return calls.get("proc", make_proc())
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    # runner.run() checks PROTON_BIN.exists() before touching subprocess;
+    # point it at a fake binary so tests pass where ~/.hermes/bin/proton
+    # doesn't exist (e.g. CI runners).
+    fake_bin = tmp_path / "proton"
+    fake_bin.touch()
+    monkeypatch.setattr(runner, "PROTON_BIN", fake_bin)
+    globals()["BIN"] = str(fake_bin)
     return calls
 
 
