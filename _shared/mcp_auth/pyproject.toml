@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Shared bearer-token ASGI middleware + HTTP config shim for the local MCP servers"
 requires-python = ">=3.11"
 dependencies = [
-    "starlette>=0.36,<1",
+    "starlette>=0.36,<2",
 ]
 
 # The importable module is the project dir itself (mcp_auth/__init__.py at
