@@ -6,7 +6,11 @@ requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.2,<2",
     "requests>=2.31,<3",
+    "mcp-auth",
 ]
+
+[tool.uv.sources]
+mcp-auth = { path = "../_shared/mcp_auth", editable = true }
 
 [tool.uv]
 package = false
