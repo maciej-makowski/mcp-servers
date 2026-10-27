@@ -9,7 +9,7 @@ COPY pyproject.toml README.md ./
 COPY proton_mcp/ ./proton_mcp/
 
 ENV UV_LINK_MODE=copy
-RUN uv sync --no-dev
+RUN uv sync
 
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8010

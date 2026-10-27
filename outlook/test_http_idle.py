@@ -53,8 +53,14 @@ def http_client():
     that can only .run() once, so the client (which owns the lifespan) must
     be shared. Env is set/restored manually (monkeypatch is function-scoped).
     """
+    import asyncio
+
     import server
-    old = os.environ.get("MCP_BEARER")
+    from outlook_mcp import idle_refresh as idle_refresh_mod
+    old_bearer = os.environ.get("MCP_BEARER")
+    orig_start_idle_refresh = idle_refresh_mod.start_idle_refresh
+    idle_refresh_mod.start_idle_refresh = (
+        lambda *a, **k: asyncio.ensure_future(asyncio.sleep(0)))
     os.environ["MCP_BEARER"] = "test-token-123"
     try:
         from mcp_auth import require_bearer
@@ -63,13 +69,18 @@ def http_client():
         app = require_bearer("MCP_BEARER")(server.mcp.streamable_http_app())
         # base_url includes a port so Host="localhost:<port>" matches mcp's
         # rebinding-protection allowlist ("localhost:*" requires one)
+        # Neutralize the lifespan's idle-refresh loop for this client only:
+        # stub the loop factory while the lifespan starts, then restore it so
+        # the _run_gate tests below exercise the real factory.
         with TestClient(app, base_url="http://localhost:8012") as client:
+            idle_refresh_mod.start_idle_refresh = orig_start_idle_refresh
             yield client
     finally:
-        if old is None:
+        idle_refresh_mod.start_idle_refresh = orig_start_idle_refresh
+        if old_bearer is None:
             os.environ.pop("MCP_BEARER", None)
         else:
-            os.environ["MCP_BEARER"] = old
+            os.environ["MCP_BEARER"] = old_bearer
 
 
 _INIT_BODY = {
