@@ -1,0 +1,53 @@
+# ~/.config/containers/systemd/mcp-google.container
+# USER-mode quadlet for the dedicated `mcp` user (rootless podman 5.4.2, arm64
+# rpi5-0). Runs the Google MCP server (gmail + gsuite tools) from
+# ghcr.io/maciej-makowski/mcp-google:latest. Hermes (native, on the hermes user)
+# reaches it at http://127.0.0.1:8011 — loopback ONLY, never on the LAN.
+#
+# Secrets: MCP_BEARER lives in %h/env/google.env (0600, owned by mcp) and is
+# NEVER baked into the image or this file.
+#
+# TOKEN MAPPING — why the volume looks odd: google/google_mcp/client.py has
+# TOKEN_PATH = os.path.expanduser("~/.hermes/google_token.json") HARDCODED.
+# There is no env override, and the container runs as root internally (no USER
+# in the Containerfile), so expanduser() resolves to /root inside the container.
+# The simplest correct approach is to bind-mount the mcp-owned host dir straight
+# onto the absolute in-container path the code already looks at:
+#
+#   host  /home/mcp/google-token/           ->  container /root/.hermes/
+#         └── google_token.json                 └── google_token.json
+#
+# The client both READS and WRITES the token there (refreshes via atomic
+# os.replace), so the mount must be read-write and the host dir must be owned
+# by the mcp user (uid mapped through rootless podman; :Z relabels for SELinux).
+#
+# Image NOT digest-pinned yet — digest pinning follows the signal-cli pattern
+# once the digests are stable (see deploy/README.md).
+[Unit]
+Description=Google MCP server (gmail/gsuite, HTTP bearer auth, port 8011)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/maciej-makowski/mcp-google:latest
+ContainerName=mcp-google
+# MCP_BEARER, MCP_HOST, MCP_PORT from the mcp-owned env file (0600).
+EnvironmentFile=%h/env/google.env
+# Publish to the host loopback only — native Hermes reaches it at 127.0.0.1:8011.
+PublishPort=127.0.0.1:8011:8011
+# OAuth token store: see TOKEN MAPPING above. Host dir created + seeded by the
+# operator (deploy/README.md one-time steps); owned by mcp, token 0600 inside.
+Volume=%h/google-token:/root/.hermes:Z
+# Server audit/activity logs, owned by mcp. google_mcp/audit.py honours the
+# MCP_LOGS_DIR env override, so this must match the /app/logs mount above.
+Environment=MCP_LOGS_DIR=/app/logs
+Volume=%h/mcp-logs/google:/app/logs:Z
+
+[Service]
+Restart=on-failure
+RestartSec=5
+# Keep the three MCP containers from crowding out native Hermes on the box.
+MemoryMax=384M
+
+[Install]
+WantedBy=default.target

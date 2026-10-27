@@ -216,3 +216,15 @@ def test_request_2xx_json_parse_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr("outlook_mcp.graph.requests.request",
                         lambda *a, **kw: resp)
     assert graph.request("GET", "/x") == {}
+
+
+def test_audit_logs_dir_env_override(monkeypatch):
+    """MCP_LOGS_DIR overrides the hardcoded ~/.hermes/mcp-logs default."""
+    import importlib
+    from outlook_mcp import audit
+    monkeypatch.setenv("MCP_LOGS_DIR", "/app/logs")
+    reloaded = importlib.reload(audit)
+    assert reloaded._LOGS_DIR == "/app/logs"
+    monkeypatch.delenv("MCP_LOGS_DIR")
+    assert importlib.reload(audit)._LOGS_DIR.endswith("mcp-logs")
+    importlib.reload(audit)  # restore module state for other tests

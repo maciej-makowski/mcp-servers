@@ -2,7 +2,8 @@
 
 Every tool call is logged (tool, args with secret values redacted, duration,
 outcome) and its full output captured to a rotating JSONL file under
-~/.hermes/mcp-logs/<server>/. Both files rotate at 5 MB, 3 backups kept.
+$MCP_LOGS_DIR/<server>/ (default ~/.hermes/mcp-logs/<server>/; the container
+deployments set MCP_LOGS_DIR=/app/logs, see deploy/*.container). Both files rotate at 5 MB, 3 backups kept.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import re
 import time
 from typing import Any, Callable
 
-_LOGS_DIR = os.path.expanduser("~/.hermes/mcp-logs")
+_LOGS_DIR = os.environ.get("MCP_LOGS_DIR") or os.path.expanduser("~/.hermes/mcp-logs")
 _MAX_BYTES = 5 * 1024 * 1024
 
 # Keys matching this get their value redacted; values matching _SECRET_VALUE too.

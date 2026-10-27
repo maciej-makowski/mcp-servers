@@ -1,0 +1,44 @@
+# ~/.config/containers/systemd/mcp-notion.container
+# USER-mode quadlet for the dedicated `mcp` user (rootless podman 5.4.2, arm64
+# rpi5-0). Runs the Notion MCP server — the official npm
+# @notionhq/notion-mcp-server (stdio) proxied to Streamable HTTP by
+# supergateway — from ghcr.io/maciej-makowski/mcp-notion:latest. Hermes
+# (native, on the hermes user) reaches it at http://127.0.0.1:8013 — loopback
+# ONLY, never on the LAN.
+#
+# Secrets: unlike google/outlook there is NO token FILE. Auth is a Notion
+# integration secret supplied at runtime through OPENAPI_MCP_HEADERS (a JSON
+# header blob the official server reads), set in %h/env/notion.env (0600,
+# owned by mcp). It is NEVER baked into the image or this file. If the
+# integration secret is rotated, edit the env file and restart the unit — no
+# re-auth dance, no volume.
+#
+# NO token volume: the server keeps no persistent token store on disk.
+#
+# Image NOT digest-pinned yet — digest pinning follows the signal-cli pattern
+# once the digests are stable (see deploy/README.md).
+[Unit]
+Description=Notion MCP server (official npm server via supergateway HTTP, port 8013)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/maciej-makowski/mcp-notion:latest
+ContainerName=mcp-notion
+# MCP_BEARER (HTTP gateway auth) + OPENAPI_MCP_HEADERS (Notion secret) from the
+# mcp-owned env file (0600).
+EnvironmentFile=%h/env/notion.env
+# Publish to the host loopback only — native Hermes reaches it at 127.0.0.1:8013.
+PublishPort=127.0.0.1:8013:8013
+# Server logs (supergateway stdout; nothing writes audit JSONL here — the
+# official npm server has no audit logger), owned by mcp.
+Volume=%h/mcp-logs/notion:/app/logs:Z
+
+[Service]
+Restart=on-failure
+RestartSec=5
+# Keep the three MCP containers from crowding out native Hermes on the box.
+MemoryMax=384M
+
+[Install]
+WantedBy=default.target
