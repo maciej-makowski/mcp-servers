@@ -37,6 +37,7 @@ IMAGES=("$GHCR/mcp-google:latest" "$GHCR/mcp-outlook:latest" "$GHCR/mcp-notion:l
 SERVICES=(
   "mcp-google:8011:%h/env/google.env"
   "mcp-outlook:8012:%h/env/outlook.env"
+  "mcp-proton:8010:%h/env/proton.env"
   "mcp-notion:8013:%h/env/notion.env"
 )
 
@@ -53,15 +54,8 @@ fail() { printf '[install] FATAL: %s\n' "$*" >&2; exit 1; }
 # ---------------------------------------------------------------- pull images
 log "pulling 4 images from ghcr (multi-arch, arm64 resolved)..."
 for img in "${IMAGES[@]}"; do
-  # mcp-proton is Task-7 prep only — not fatal if it can't be pulled now.
-  if [[ "$img" == *mcp-proton:* ]]; then
-    if podman pull "$img"; then log "  pulled $img"; else
-      log "  WARN: could not pull $img (Task-7 prep only; continuing)"
-    fi
-  else
-    podman pull "$img" || fail "podman pull $img"
-    log "  pulled $img"
-  fi
+  podman pull "$img" || fail "podman pull $img"
+  log "  pulled $img"
 done
 
 # ------------------------------------------------------------ install quadlets
