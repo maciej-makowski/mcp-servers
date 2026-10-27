@@ -77,6 +77,8 @@ Every call takes `{"action": ..., "params": {...}}`. `download` is a read but wr
 
 **Caveat:** the `status` action is remapped to `proton mail messages count`, whose CLI verb supports **only `--folder`** — no other filter key maps to it. Filter keys other than `folder` are silently dropped for `status`; use `list`/`search` for full filter support.
 
+**More live-verified CLI contract notes** (hidden inbox-category label IDs, ref-ID flag-parsing quirks, ref-batch length caps, export/backup usage): see [docs/live-notes.md](docs/live-notes.md).
+
 ### Bulk filter rails (`proton_mail` gated actions)
 
 Bulk gated actions (`move`, `label`, `unlabel`, `mark`, `trash`) accept either explicit `refs` (message ids) **or** a filter object — never both:
