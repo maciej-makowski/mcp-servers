@@ -1,0 +1,17 @@
+# Multi-arch (linux/amd64 + linux/arm64) — tag verified on ghcr.io/astral-sh/uv.
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+# Preserve repo layout: google/pyproject.toml expects ../_shared/mcp_auth.
+COPY _shared/ /app/_shared/
+COPY google/ /app/google/
+
+WORKDIR /app/google
+ENV UV_LINK_MODE=copy
+# No --frozen: locks are (re)generated at build time per ruling.
+RUN uv sync --no-dev
+
+ENV MCP_HOST=0.0.0.0
+ENV MCP_PORT=8011
+
+# HTTP mode additionally requires MCP_BEARER at runtime (fail closed).
+CMD ["uv", "run", "python", "server.py"]

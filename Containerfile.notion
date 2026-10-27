@@ -1,0 +1,14 @@
+# Thin wrapper image: official npm @notionhq/notion-mcp-server (stdio) proxied
+# to Streamable HTTP via supergateway. Flags verified against supergateway's
+# README (2026-10): --stdio, --outputTransport streamableHttp, --port.
+# Auth is supplied at runtime via OPENAPI_MCP_HEADERS (never baked in).
+FROM node:22-slim
+
+RUN npm install -g @notionhq/notion-mcp-server supergateway \
+    && npm cache clean --force
+
+ENV MCP_PORT=8013
+
+EXPOSE 8013
+
+CMD ["supergateway", "--stdio", "notion-mcp-server", "--outputTransport", "streamableHttp", "--port", "8013"]
