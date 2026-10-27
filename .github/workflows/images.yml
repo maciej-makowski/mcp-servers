@@ -61,8 +61,8 @@ jobs:
 
   build:
     needs: [tests, changes]
-    # tests may skip nothing (always runs), changes gates per-target.
-    if: ${{ always() && needs.changes.result == 'success' }}
+    # build runs only when tests passed AND paths-filter succeeded.
+    if: ${{ !cancelled() && needs.tests.result == 'success' && needs.changes.result == 'success' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
