@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import time
 
 import pytest
 
@@ -138,8 +139,19 @@ def test_audit_fail_logged(tmp_path, monkeypatch):
     _reset_audit_loggers()
 
 
-def test_request_accepts_201(monkeypatch):
+def _token_file(tmp_path):
+    """Self-contained token file so access_token() short-circuits without
+    reading the real ~/.config/office365/tokens.json (absent on CI runners)."""
+    tfile = os.path.join(str(tmp_path), "tokens.json")
+    with open(tfile, "w") as f:
+        json.dump({"access_token": "tok", "expires_at": time.time() + 9999,
+                   "refresh_token": "rt"}, f)
+    return tfile
+
+
+def test_request_accepts_201(monkeypatch, tmp_path):
     import outlook_mcp.graph as g
+    monkeypatch.setattr(graph, "TOKEN_FILE", _token_file(tmp_path))
     resp = type("R", (), {"status_code": 201,
                           "content": b'{"id": "e1"}',
                           "json": lambda self: {"id": "e1"},
@@ -149,8 +161,9 @@ def test_request_accepts_201(monkeypatch):
     assert graph.request("POST", "/x", json_body={}) == {"id": "e1"}
 
 
-def test_request_rejects_4xx(monkeypatch):
+def test_request_rejects_4xx(monkeypatch, tmp_path):
     import outlook_mcp.graph as g
+    monkeypatch.setattr(graph, "TOKEN_FILE", _token_file(tmp_path))
     resp = type("R", (), {"status_code": 403, "content": b"", "text": "denied"})()
     monkeypatch.setattr("outlook_mcp.graph.requests.request",
                         lambda *a, **kw: resp)
@@ -195,8 +208,9 @@ def test_onedrive_upload_quotes_name(monkeypatch, tmp_path):
     assert result["status"] == 201
 
 
-def test_request_2xx_json_parse_fallback(monkeypatch):
+def test_request_2xx_json_parse_fallback(monkeypatch, tmp_path):
     import outlook_mcp.graph as g
+    monkeypatch.setattr(graph, "TOKEN_FILE", _token_file(tmp_path))
     resp = type("R", (), {"status_code": 200, "content": b"not-json",
                           "json": lambda self: (_ for _ in ()).throw(ValueError())})()
     monkeypatch.setattr("outlook_mcp.graph.requests.request",
