@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 from typing import Any
 
 import mcp_types as types
@@ -301,14 +302,133 @@ async def _run_stdio() -> None:
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
+# ---------------------------------------------------------------------------
+# HTTP transport (streamable-http) with bearer-token auth
+# ---------------------------------------------------------------------------
+# Selected when MCP_BEARER or MCP_PORT is set; stdio stays the default. The
+# token comes ONLY from the environment (MCP_BEARER) — never a literal.
+DEFAULT_HTTP_HOST = "0.0.0.0"
+DEFAULT_HTTP_PORT = 8010
+
+
+def resolve_http_config(
+    env: "dict[str, str] | os._Environ[str] | None" = None,
+) -> dict[str, Any] | None:
+    """Resolve the HTTP transport config from env vars, or None for stdio.
+
+    HTTP mode is opted in via MCP_BEARER (bearer token required) or MCP_PORT
+    (defaults the bearer token to empty -> HTTP without auth is NOT possible:
+    MCP_PORT alone still requires MCP_BEARER, so an unauthenticated HTTP
+    listener cannot be started by accident). Returns None when neither is set.
+    """
+    if env is None:
+        env = os.environ
+    bearer = env.get("MCP_BEARER")
+    if bearer is None and env.get("MCP_PORT") is None:
+        return None
+    if not bearer:
+        raise ValueError("MCP_BEARER must be a non-empty token when HTTP transport is selected")
+    host = env.get("MCP_HOST") or DEFAULT_HTTP_HOST
+    try:
+        port = int(env.get("MCP_PORT", DEFAULT_HTTP_PORT))
+    except ValueError as exc:
+        raise ValueError(f"MCP_PORT must be an integer, got {env.get('MCP_PORT')!r}") from exc
+    return {"host": host, "port": port, "bearer": bearer}
+
+
+class BearerAuthMiddleware:
+    """Pure-ASGI middleware: require 'Authorization: Bearer ***'.
+
+    Constant-time compare via secrets.compare_digest on the full header
+    value; anything else (missing header, wrong scheme, wrong token) gets a
+    401 JSONResponse before the MCP session manager ever sees the request.
+    """
+
+    def __init__(self, app: Any, token: str) -> None:
+        self.app = app
+        self._expected = f"Bearer {token}"
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1")
+            for k, v in scope.get("headers", [])
+        }
+        provided = headers.get("authorization", "")
+        if secrets.compare_digest(provided, self._expected):
+            await self.app(scope, receive, send)
+            return
+        from starlette.responses import JSONResponse
+
+        response = JSONResponse(
+            {"error": "unauthorized", "detail": "missing or invalid bearer token"},
+            status_code=401,
+        )
+        await response(scope, receive, send)
+
+
+def make_http_asgi(server: Any, bearer: str) -> Any:
+    """Build the Starlette app serving the server over streamable-http at /mcp."""
+    from contextlib import asynccontextmanager
+
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    # stateless=True: each HTTP request is a self-contained MCP exchange, so
+    # the ASGI process holds no per-client session state.
+    manager = StreamableHTTPSessionManager(app=server, json_response=True, stateless=True)
+
+    async def handle_streamable_http(scope: Any, receive: Any, send: Any) -> None:
+        await manager.handle_request(scope, receive, send)
+
+    @asynccontextmanager
+    async def lifespan(app: Any):
+        async with manager.run():
+            yield
+
+    # Explicit Route on /mcp (not Mount, which 307-redirects /mcp -> /mcp/
+    # before the auth middleware can see the request).
+    app = Starlette(
+        routes=[
+            Route(
+                "/mcp",
+                BearerAuthMiddleware(handle_streamable_http, bearer),
+                methods=["POST", "GET", "DELETE"],
+            )
+        ],
+        lifespan=lifespan,
+    )
+    return app
+
+
+async def _run_http(host: str, port: int, bearer: str) -> None:
+    """Serve the MCP server over streamable-http with bearer auth."""
+    import uvicorn
+
+    config = uvicorn.Config(
+        make_http_asgi(make_server(), bearer),
+        host=host,
+        port=port,
+        log_level="info",
+    )
+    await uvicorn.Server(config).serve()
+
+
 def main() -> None:
-    """Entry point: serve the three tools over MCP stdio until stdin EOF."""
+    """Entry point: MCP stdio by default; HTTP when MCP_BEARER/MCP_PORT set."""
     # Update-check off by default for this server's CLI subprocesses (the CLI's
     # self-update path cannot be verified offline; updates are manual). An env
     # var set in the MCP config would also work, but Hermes config env values
     # round-trip as YAML ints, which the stdio schema rejects.
     os.environ.setdefault("PROTON_NO_UPDATE_CHECK", "1")
-    asyncio.run(_run_stdio())
+    http_cfg = resolve_http_config()
+    if http_cfg is not None:
+        asyncio.run(_run_http(http_cfg["host"], http_cfg["port"], http_cfg["bearer"]))
+    else:
+        asyncio.run(_run_stdio())
 
 
 if __name__ == "__main__":

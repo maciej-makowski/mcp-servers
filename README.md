@@ -130,6 +130,25 @@ A subprocess timeout or a missing binary also returns a structured failure; the 
 - Logging out or revoking is safe for the server: calls simply start returning `auth_required` (exit 2).
 - Scope guard: no Proton Pass / vault exposure — deliberately omitted.
 
+## HTTP transport (containerised mode)
+
+Besides the default stdio transport, the server can serve streamable HTTP at `/mcp` with bearer-token auth. This is the mode used by the containerised quadlet deployment.
+
+| Env var | Meaning |
+|---|---|
+| `MCP_HOST` | Bind address (default `0.0.0.0`) |
+| `MCP_PORT` | Listen port (default `8010`) |
+| `MCP_BEARER` | Bearer token — **required whenever HTTP mode is enabled**; stdio remains the default when none of these are set |
+
+HTTP mode is selected whenever `MCP_BEARER` or `MCP_PORT` is set; an unauthenticated HTTP listener cannot be started by accident.
+
+```sh
+curl -s http://127.0.0.1:8010/mcp \
+  -H "Authorization: Bearer $MCP_BEARER" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+```
+
 ## Development
 
 ```sh
