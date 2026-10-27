@@ -24,6 +24,13 @@
 
 set -euo pipefail
 
+# sudo -u mcp doesn't set the user-scope bus vars — systemctl --user needs them.
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+  XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+  export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+fi
+
 GHCR=ghcr.io/maciej-makowski
 IMAGES=("$GHCR/mcp-google:latest" "$GHCR/mcp-outlook:latest" "$GHCR/mcp-notion:latest" "$GHCR/mcp-proton:latest")
 
@@ -47,7 +54,7 @@ fail() { printf '[install] FATAL: %s\n' "$*" >&2; exit 1; }
 log "pulling 4 images from ghcr (multi-arch, arm64 resolved)..."
 for img in "${IMAGES[@]}"; do
   # mcp-proton is Task-7 prep only — not fatal if it can't be pulled now.
-  if [[ "$img" == *mcp-proton ]]; then
+  if [[ "$img" == *mcp-proton:* ]]; then
     if podman pull "$img"; then log "  pulled $img"; else
       log "  WARN: could not pull $img (Task-7 prep only; continuing)"
     fi
