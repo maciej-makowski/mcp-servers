@@ -88,6 +88,20 @@ def access_token() -> str:
             pass
 
 
+def refresh_credentials() -> None:
+    """Force ONE token refresh through the existing flocked+atomic-write path.
+
+    Used by the idle-refresh loop: drops the cached access_token so the
+    unexpired short-circuit in access_token() can't fire, then lets its
+    flock-serialized refresh + atomic save do the work.
+    """
+    tokens = _load_tokens()
+    tokens.pop("access_token", None)
+    _save_tokens(tokens)
+    access_token()
+    log.info("graph token force-refreshed")
+
+
 def request(method: str, path: str, *, params: dict | None = None,
             json_body: dict | None = None, ok: tuple = ()) -> Any:
     """Graph call returning parsed JSON (or {} for 204). Raises GraphError on failure."""

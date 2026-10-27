@@ -1,0 +1,23 @@
+[project]
+name = "mcp-auth"
+version = "0.1.0"
+description = "Shared bearer-token ASGI middleware + HTTP config shim for the local MCP servers"
+requires-python = ">=3.11"
+dependencies = [
+    "starlette>=0.36,<1",
+]
+
+# The importable module is the project dir itself (mcp_auth/__init__.py at
+# the project root) — map package name -> root explicitly, otherwise setuptools
+# auto-discovery misses it and the editable install doesn't resolve.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-dir]
+mcp_auth = "."
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
