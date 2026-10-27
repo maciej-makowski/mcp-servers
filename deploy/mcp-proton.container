@@ -1,0 +1,36 @@
+# User-mode quadlet for the `mcp` user: proton-mcp HTTP server (isolation Task 7).
+# Image from the monorepo's images.yml workflow (proton/Containerfile, multi-arch).
+# Bearer auth is enforced by proton_mcp's own middleware (MCP_BEARER, fail-closed).
+#
+# Two single-file bind mounts, mapped to the paths proton_mcp hardcodes:
+#   - runner.py: PROTON_BIN = ~/.hermes/bin/proton  → in-container /root/.hermes/bin/proton
+#     (host copy installed by Maciek from the checksum-verified proton-cli binary)
+#   - proton-cli stores its session under ~/.config/protonmail → /root/.config/protonmail
+#     (the session must be created by an interactive `proton account login` run as the
+#     mcp user against this volume — never automate the login)
+#
+# NOTE: the binary mount must be a file mount of an EXECUTABLE host file owned by mcp
+# (install -o mcp -m 700 /home/hermes/.hermes/bin/proton /home/mcp/bin/proton).
+#
+# Like the other three: loopback-only publish; MCP_LOGS_DIR pattern not needed here —
+# proton_mcp has no audit-logging layer (logs go to the unit journal).
+[Unit]
+Description=proton-mcp HTTP server (isolated)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/maciej-makowski/mcp-proton:latest
+ContainerName=mcp-proton
+EnvironmentFile=%h/env/proton.env
+PublishPort=127.0.0.1:8010:8010
+Volume=%h/bin/proton:/root/.hermes/bin/proton:Z
+Volume=%h/proton-data:/root/.config/protonmail:Z
+
+[Service]
+Restart=on-failure
+RestartSec=5
+MemoryMax=384M
+
+[Install]
+WantedBy=default.target
