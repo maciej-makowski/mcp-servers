@@ -54,6 +54,26 @@ def get_credentials():
     return creds
 
 
+def refresh_credentials() -> None:
+    """Force ONE token refresh through the existing refresh+atomic-write path.
+
+    Used by the idle-refresh loop (credentials may still be technically valid
+    but older than the max refresh age).
+    """
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+
+    _ensure_token_file()
+    with open(TOKEN_PATH) as f:
+        raw = json.load(f)
+    creds = Credentials.from_authorized_user_info(raw, raw.get("scopes") or SCOPES)
+    creds.refresh(Request())
+    payload = json.loads(creds.to_json())
+    payload.setdefault("type", "authorized_user")
+    _write_token_atomic(payload)
+    log.info("google token force-refreshed")
+
+
 def _write_token_atomic(payload: dict) -> None:
     """Temp-file + replace so a mid-write crash can't destroy the refresh token."""
     tmp = TOKEN_PATH + ".tmp"

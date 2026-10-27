@@ -8,7 +8,11 @@ dependencies = [
     "google-api-python-client>=2.100,<3",
     "google-auth>=2.23,<3",
     "google-auth-oauthlib>=1.1,<2",
+    "mcp-auth",
 ]
+
+[tool.uv.sources]
+mcp-auth = { path = "../_shared/mcp_auth", editable = true }
 
 [tool.uv]
 package = false

@@ -1,18 +1,39 @@
 #!/usr/bin/env python3
-"""Google Workspace MCP server (FastMCP, stdio).
+"""Google Workspace MCP server (FastMCP).
 
-Source of truth for Google API operations — absorbed from the
-google-workspace skill script. Tool docstrings mark WRITE ops.
+Transport: stdio by default. HTTP (streamable-http) is enabled when MCP_BEARER
+or MCP_PORT is set — HTTP requires MCP_BEARER (fail closed if missing).
+Host/port come from mcp_auth.resolve_http_config (MCP_HOST defaults to
+127.0.0.1; containers set MCP_HOST=0.0.0.0 explicitly to accept forwarded
+connections — publishing stays host-loopback).
+
 Audit log: ~/.hermes/mcp-logs/google/ (args redacted, outputs captured).
 """
+import contextlib
 import json
+import os
 
 from mcp.server.fastmcp import FastMCP
 
-from google_mcp import audit, gmail, gsuite
+from google_mcp import audit, client, gmail, gsuite, idle_refresh
+from google_mcp.client import TOKEN_PATH
 
-mcp = FastMCP("google")
+DEFAULT_HTTP_PORT = 8011
 _S = "google"
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(server: FastMCP):
+    """Idle-refresh loop alongside the server (Task 6c)."""
+    task = idle_refresh.start_idle_refresh(
+        client.refresh_credentials, TOKEN_PATH)
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+mcp = FastMCP("google", lifespan=_lifespan)
 
 
 @mcp.tool()
@@ -75,5 +96,33 @@ def sheets_update(sheet_id: str, range_name: str, values_json: str) -> str:
                       ensure_ascii=False)
 
 
+def _resolve_run_mode() -> tuple:
+    """Return ('stdio',) or ('http', host, port).
+
+    stdio stays the default when neither MCP_BEARER nor MCP_PORT is set.
+    HTTP requires MCP_BEARER (fail closed: never serve HTTP unauthenticated).
+    """
+    from mcp_auth import resolve_http_config
+
+    bearer = os.environ.get("MCP_BEARER")
+    if bearer is None and os.environ.get("MCP_PORT") is None:
+        return ("stdio",)
+    if bearer is None:
+        raise RuntimeError(
+            "HTTP transport requested (MCP_PORT set) but MCP_BEARER is not set")
+    host, port = resolve_http_config(DEFAULT_HTTP_PORT)
+    return ("http", host, port)
+
+
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    mode = _resolve_run_mode()
+    if mode[0] == "stdio":
+        mcp.run(transport="stdio")
+    else:
+        _, host, port = mode
+        from mcp_auth import require_bearer
+
+        import uvicorn
+
+        app = require_bearer("MCP_BEARER")(mcp.streamable_http_app())
+        uvicorn.run(app, host=host, port=port)
