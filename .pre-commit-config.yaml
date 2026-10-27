@@ -1,0 +1,15 @@
+# See https://pre-commit.com for more information
+# NOTE: added 2026-10-27 with the wrap-up work; the first full pass over the
+# existing tree happens later (it would be a large diff tonight).
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: 'uv\.lock$'
+      - id: end-of-file-fixer
+        exclude: 'uv\.lock$'
+      - id: check-yaml
+        files: '\.github/workflows/.*\.ya?ml$'
+      - id: check-json
+      - id: check-added-large-files

@@ -1,7 +1,29 @@
+# Python
 .venv/
+venv/
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 
-# editable install artifacts
+# editable install artifacts / build outputs
 *.egg-info/
+dist/
+build/
+
+# Node (notion npm server)
+node_modules/
+
+# Secrets / env — NEVER commit. Env files live only on the host
+# (/home/mcp/env/*.env) and are Maciek-only.
+.env
+.env.*
+*.env
+!env.example
+
+# OS / editor
+.DS_Store
