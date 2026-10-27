@@ -24,13 +24,18 @@ jobs:
         include:
           - name: google
             dir: google
+            pytest_cmd: uv run pytest
           - name: outlook
             dir: outlook
+            pytest_cmd: uv run pytest
+          - name: proton
+            dir: proton
+            pytest_cmd: uv run --extra dev pytest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - name: Run tests
-        run: uv run pytest
+        run: ${{ matrix.pytest_cmd }}
         working-directory: ${{ matrix.dir }}
 
   changes:
@@ -39,6 +44,7 @@ jobs:
       google: ${{ steps.filter.outputs.google }}
       outlook: ${{ steps.filter.outputs.outlook }}
       notion: ${{ steps.filter.outputs.notion }}
+      proton: ${{ steps.filter.outputs.proton }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -57,6 +63,9 @@ jobs:
               - '.github/workflows/images.yml'
             notion:
               - 'Containerfile.notion'
+              - '.github/workflows/images.yml'
+            proton:
+              - 'proton/**'
               - '.github/workflows/images.yml'
 
   build:
@@ -77,6 +86,9 @@ jobs:
           - name: notion
             dockerfile: Containerfile.notion
             context: .
+          - name: proton
+            dockerfile: proton/Containerfile
+            context: proton
     steps:
       - name: Skip if no relevant changes
         id: skip
