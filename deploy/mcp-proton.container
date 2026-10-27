@@ -5,7 +5,7 @@
 # Two single-file bind mounts, mapped to the paths proton_mcp hardcodes:
 #   - runner.py: PROTON_BIN = ~/.hermes/bin/proton  → in-container /root/.hermes/bin/proton
 #     (host copy installed by Maciek from the checksum-verified proton-cli binary)
-#   - proton-cli stores its session under ~/.config/protonmail → /root/.config/protonmail
+#   - proton-cli stores its session under ~/.config/proton-cli → /root/.config/proton-cli
 #     (the session must be created by an interactive `proton account login` run as the
 #     mcp user against this volume — never automate the login)
 #
@@ -25,7 +25,7 @@ ContainerName=mcp-proton
 EnvironmentFile=%h/env/proton.env
 PublishPort=127.0.0.1:8010:8010
 Volume=%h/bin/proton:/root/.hermes/bin/proton:Z
-Volume=%h/proton-data:/root/.config/protonmail:Z
+Volume=%h/.config/proton-cli:/root/.config/proton-cli:Z
 
 [Service]
 Restart=on-failure

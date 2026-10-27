@@ -222,4 +222,49 @@ def test_refresh_credentials_forces_refresh_and_writes_atomically(
     assert len(refreshed) == 1 and isinstance(refreshed[0], FakeRequest)
     saved = json.loads(token_file.read_text())
     assert saved["refresh_token"] == "r2"
-    assert token_file.with_suffix(".json.tmp").exists() is False
+    assert not list(tmp_path.glob("*.tmp*"))
+
+
+def test_refresh_credentials_concurrent_writers_no_collision(
+        tmp_path, monkeypatch):
+    """Two concurrent refresh_credentials() calls (per-request + idle loop
+    collision seen in CI) must not share a tmp file — both complete and the
+    store stays valid."""
+    import concurrent.futures
+
+    from google_mcp import client
+
+    token_file = tmp_path / "google_token.json"
+    token_file.write_text(json.dumps({
+        "refresh_token": "r", "client_id": "c", "client_secret": "s",
+        "scopes": client.SCOPES, "type": "authorized_user",
+    }))
+    monkeypatch.setattr(client, "TOKEN_PATH", str(token_file))
+
+    class FakeCreds:
+        def refresh(self, request):
+            pass
+
+        def to_json(self):
+            return json.dumps({"refresh_token": "r2", "type": "authorized_user"})
+
+    import google.oauth2.credentials as credentials_mod
+    monkeypatch.setattr(
+        credentials_mod.Credentials, "from_authorized_user_info",
+        classmethod(lambda cls, info, scopes: FakeCreds()))
+
+    import google.auth.transport.requests as requests_mod
+
+    class FakeRequest:
+        pass
+
+    monkeypatch.setattr(requests_mod, "Request", FakeRequest, raising=False)
+
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        futures = [pool.submit(client.refresh_credentials) for _ in range(2)]
+        for f in futures:
+            f.result()  # raises if either writer collided/failed
+
+    saved = json.loads(token_file.read_text())
+    assert saved["refresh_token"] == "r2"
+    assert not list(tmp_path.glob("*.tmp*"))

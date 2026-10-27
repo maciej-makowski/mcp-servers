@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import os
+import threading
 from email.mime.text import MIMEText
 
 HERMES_HOME = os.path.expanduser("~/.hermes")
@@ -76,7 +77,7 @@ def refresh_credentials() -> None:
 
 def _write_token_atomic(payload: dict) -> None:
     """Temp-file + replace so a mid-write crash can't destroy the refresh token."""
-    tmp = TOKEN_PATH + ".tmp"
+    tmp = TOKEN_PATH + f".tmp.{os.getpid()}.{threading.get_ident()}"
     with open(tmp, "w") as f:
         json.dump(payload, f, indent=2)
         os.chmod(tmp, 0o600)

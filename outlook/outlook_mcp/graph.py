@@ -10,6 +10,7 @@ import fcntl
 import json
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -35,7 +36,7 @@ def _load_tokens() -> dict:
 
 def _save_tokens(tokens: dict) -> None:
     # Atomic: crash mid-write must not destroy the only refresh-token copy.
-    tmp = TOKEN_FILE + ".tmp"
+    tmp = TOKEN_FILE + f".tmp.{os.getpid()}.{threading.get_ident()}"
     with open(tmp, "w") as f:
         json.dump(tokens, f, indent=2)
     os.chmod(tmp, 0o600)

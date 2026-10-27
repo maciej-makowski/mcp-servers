@@ -218,4 +218,42 @@ def test_refresh_credentials_forces_flocked_refresh(tmp_path, monkeypatch):
     saved = json.loads(token_file.read_text())
     assert saved["access_token"] == "new"
     assert saved["refresh_token"] == "r2"
-    assert token_file.with_suffix(".json.tmp").exists() is False
+    assert not list(tmp_path.glob("*.tmp*"))
+
+
+def test_refresh_credentials_concurrent_writers_no_collision(
+        tmp_path, monkeypatch):
+    """Two concurrent refresh_credentials() calls (per-request + idle loop)
+    must not share a tmp file — both complete and the store stays valid."""
+    import concurrent.futures
+
+    from outlook_mcp import graph
+
+    token_file = tmp_path / "tokens.json"
+    token_file.write_text(json.dumps({
+        "access_token": "stale", "refresh_token": "r",
+        "token_url": "https://fake/token", "client_id": "c", "scope": "s",
+        "expires_at": 0,  # force refresh on each call
+    }))
+    monkeypatch.setattr(graph, "TOKEN_FILE", str(token_file))
+
+    class FakeResp:
+        ok = True
+
+        def json(self):
+            return {"access_token": "new", "refresh_token": "r2",
+                    "expires_in": 3600}
+
+    def fake_post(url, data=None, timeout=None):
+        return FakeResp()
+
+    monkeypatch.setattr(graph.requests, "post", fake_post)
+
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        futures = [pool.submit(graph.refresh_credentials) for _ in range(2)]
+        for f in futures:
+            f.result()  # raises if either writer collided/failed
+
+    saved = json.loads(token_file.read_text())
+    assert saved["access_token"] == "new"
+    assert not list(tmp_path.glob("*.tmp*"))
