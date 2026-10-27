@@ -101,10 +101,12 @@ verify_one() {
   good="$(curl -s -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $bearer" \
     -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
     -d "$INIT_BODY" "http://127.0.0.1:${port}/mcp" || true)"
   wrong="$(curl -s -o /dev/null -w '%{http_code}' \
     -H 'Authorization: Bearer definitely-wrong-token' \
     -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
     -d "$INIT_BODY" "http://127.0.0.1:${port}/mcp" || true)"
 
   if [ "$good" = "200" ] && [ "$wrong" = "401" ]; then

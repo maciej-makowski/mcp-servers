@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proton-mcp"
+version = "0.1.0"
+description = "MCP server wrapping the proton-cli Go binary"
+requires-python = ">=3.10"
+dependencies = ["mcp"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+proton-mcp = "proton_mcp.server:main"
+
+[tool.setuptools.packages.find]
+include = ["proton_mcp*"]
