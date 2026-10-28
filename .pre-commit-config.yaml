@@ -1,6 +1,7 @@
 # See https://pre-commit.com for more information
-# NOTE: added 2026-10-27 with the wrap-up work; the first full pass over the
-# existing tree happens later (it would be a large diff tonight).
+# NOTE: added 2026-10-27 with the wrap-up work. First full pass over the
+# existing tree was run 2026-10-28 (`pre-commit run --all-files`): all hooks
+# clean, no fixes needed.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
