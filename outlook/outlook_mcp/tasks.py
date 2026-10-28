@@ -1,9 +1,14 @@
 """Microsoft To-Do operations (Graph /me/todo)."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from .graph import request
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def list_task_lists() -> Any:
@@ -11,15 +16,20 @@ def list_task_lists() -> Any:
 
 
 def list_tasks(list_id: str, completed: bool | None = None) -> Any:
-    params = {"$filter": f"isCompleted eq {str(bool(completed)).lower()}"} \
-        if completed is not None else None
-    return request("GET", f"/me/todo/lists/{list_id}/tasks", params=params)
+    all_tasks = request("GET", f"/me/todo/lists/{list_id}/tasks")["value"]
+    if completed is None:
+        return {"value": all_tasks}
+    return {"value": [
+        t for t in all_tasks
+        if bool(t.get("completedDateTime", {}).get("dateTime")) is bool(completed)
+    ]}
 
 
 def create_task(list_id: str, subject: str, due: str | None = None,
                 importance: str = "normal", completed: bool = False) -> Any:
-    task: dict = {"title": subject, "importance": importance,
-                  "isCompleted": completed}
+    task: dict = {"title": subject, "importance": importance}
+    if completed:
+        task["completedDateTime"] = {"dateTime": _now_utc(), "timeZone": "UTC"}
     if due:
         task["dueDateTime"] = {"dateTime": due, "timeZone": "UTC"}
     return request("POST", f"/me/todo/lists/{list_id}/tasks", json_body=task)
@@ -36,7 +46,12 @@ def update_task(list_id: str, task_id: str, *, subject: str | None = None,
     if importance is not None:
         patch["importance"] = importance
     if completed is not None:
-        patch["isCompleted"] = completed
+        if completed:
+            patch["completedDateTime"] = {"dateTime": _now_utc(), "timeZone": "UTC"}
+            patch["status"] = "completed"
+        else:
+            patch["completedDateTime"] = None
+            patch["status"] = "notStarted"
     return request("PATCH", f"/me/todo/lists/{list_id}/tasks/{task_id}",
                    json_body=patch)
 
