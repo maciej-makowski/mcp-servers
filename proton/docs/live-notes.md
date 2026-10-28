@@ -1,3 +1,5 @@
+Salvaged from the archived proton-mcp repo before archival.
+
 # Live-verified proton-cli notes (v5.1.0, real account, verified Oct 25 2026)
 
 Findings from exercising the real CLI against a live Proton account (17k-message
