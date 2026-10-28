@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# deploy/install.sh — install the three MCP quadlets for the dedicated `mcp`
+# deploy/install.sh — install the MCP quadlets for the dedicated `mcp`
 # user on rpi5-0 (rootless podman 5.4.2, arm64).
 #
 # RUN AS THE MCP USER (or as root acting for it, e.g.
@@ -12,7 +12,8 @@
 #      the quadlets, plus mcp-proton for the later proton quadlet);
 #   2. installs the .container files into ~/.config/containers/systemd/;
 #   3. systemd --user daemon-reload;
-#   4. starts the three units;
+#   4. stops + removes any pre-existing containers, then starts the units (a
+#      re-run actually recreates on the new images);
 #   5. verifies each port: initialize with the right bearer -> 200, wrong
 #      bearer -> 401.
 #
@@ -47,6 +48,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Expand %h the way systemd would (the env file names in SERVICES use %h).
 expand_h() { printf '%s\n' "${1/\%h/$HOME}"; }
 
+# Container name from a quadlet file's ContainerName= line.
+name_of() { grep -E '^ContainerName=' "$1" | tail -1 | cut -d= -f2-; }
+
 log() { printf '[install] %s\n' "$*"; }
 
 fail() { printf '[install] FATAL: %s\n' "$*" >&2; exit 1; }
@@ -71,6 +75,16 @@ done
 
 # -------------------------------------------------------- reload + start units
 systemctl --user daemon-reload || fail "daemon-reload"
+# RE-RUN SAFETY: a restart alone would keep a pre-existing container running
+# its OLD image (found 2026-10-27). Stop and remove each unit's container
+# (ignoring not-found) so quadlet start always recreates from the freshly
+# pulled image.
+for svc_port_env in "${SERVICES[@]}"; do
+  svc="${svc_port_env%%:*}"
+  cname="$(name_of "$SCRIPT_DIR/$svc.container")"
+  systemctl --user stop "$svc.service" 2>/dev/null || true
+  podman rm -f "$cname" >/dev/null 2>&1 || true
+done
 for svc_port_env in "${SERVICES[@]}"; do
   svc="${svc_port_env%%:*}"
   systemctl --user start "$svc.service" || fail "start $svc.service"
@@ -127,4 +141,4 @@ for svc_port_env in "${SERVICES[@]}"; do
   [ -n "$ok" ] || fail "$svc did not become ready within 30s"
 done
 
-log "all three MCP servers verified. Done."
+log "all MCP servers verified. Done."
