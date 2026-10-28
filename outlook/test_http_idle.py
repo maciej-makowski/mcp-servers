@@ -53,30 +53,39 @@ def http_client():
     that can only .run() once, so the client (which owns the lifespan) must
     be shared. Env is set/restored manually (monkeypatch is function-scoped).
     """
-    import asyncio
+    import contextlib
 
     import server
-    from outlook_mcp import idle_refresh as idle_refresh_mod
     old_bearer = os.environ.get("MCP_BEARER")
-    orig_start_idle_refresh = idle_refresh_mod.start_idle_refresh
-    idle_refresh_mod.start_idle_refresh = (
-        lambda *a, **k: asyncio.ensure_future(asyncio.sleep(0)))
+    # The idle-refresh loop is NOT started by the Starlette app lifespan:
+    # FastMCP's streamable_http_app lifespan only runs session_manager.run(),
+    # while server._lifespan starts a REAL idle-refresh loop per MCP session
+    # (at each initialize request, on the test portal loop). Stubbing
+    # idle_refresh.start_idle_refresh around app startup therefore misses it:
+    # on a CI runner with no token file the loop's to_thread(
+    # refresh_credentials) worker can execute inside a LATER test, racing
+    # that test's monkeypatched graph.TOKEN_FILE (CI: assert 2 == 1).
+    # Kill it at the seam the SDK actually calls: the lowlevel Server's
+    # per-session lifespan instance attribute (Server.run does
+    # self.lifespan(self)), restored at module teardown so the _run_gate
+    # tests below exercise the real factory directly.
+    orig_lowlevel_lifespan = server.mcp._mcp_server.lifespan
+
+    @contextlib.asynccontextmanager
+    async def _no_lifespan(app):
+        yield None
+
+    server.mcp._mcp_server.lifespan = _no_lifespan
     os.environ["MCP_BEARER"] = "test-token-123"
     try:
         from mcp_auth import require_bearer
         from starlette.testclient import TestClient
 
         app = require_bearer("MCP_BEARER")(server.mcp.streamable_http_app())
-        # base_url includes a port so Host="localhost:<port>" matches mcp's
-        # rebinding-protection allowlist ("localhost:*" requires one)
-        # Neutralize the lifespan's idle-refresh loop for this client only:
-        # stub the loop factory while the lifespan starts, then restore it so
-        # the _run_gate tests below exercise the real factory.
         with TestClient(app, base_url="http://localhost:8012") as client:
-            idle_refresh_mod.start_idle_refresh = orig_start_idle_refresh
             yield client
     finally:
-        idle_refresh_mod.start_idle_refresh = orig_start_idle_refresh
+        server.mcp._mcp_server.lifespan = orig_lowlevel_lifespan
         if old_bearer is None:
             os.environ.pop("MCP_BEARER", None)
         else:
