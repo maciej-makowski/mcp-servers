@@ -25,7 +25,9 @@ Wants=network-online.target
 [Container]
 Image=ghcr.io/maciej-makowski/mcp-notion:latest
 ContainerName=mcp-notion
-# MCP_BEARER (HTTP gateway auth) + OPENAPI_MCP_HEADERS (Notion secret) from the
+# SUPERGATEWAY_API_KEY (HTTP gateway auth — supergateway reads it from the
+# container env, never a --apiKey cmdline flag: /proc/<pid>/cmdline is
+# world-readable) + OPENAPI_MCP_HEADERS (Notion secret) from the
 # mcp-owned env file (0600).
 EnvironmentFile=%h/env/notion.env
 # Publish to the host loopback only — native Hermes reaches it at 127.0.0.1:8013.

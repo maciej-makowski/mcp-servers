@@ -1,22 +1,49 @@
 # Thin wrapper image: official npm @notionhq/notion-mcp-server (stdio) proxied
 # to Streamable HTTP by supergateway. Flags verified against supergateway's
-# README (2026-10): --stdio, --outputTransport streamableHttp, --port, --host,
-# --apiKey. Auth is supplied at runtime via OPENAPI_MCP_HEADERS (never baked
-# in) and the gateway key via MCP_BEARER (also never baked in).
+# README (2026-10): --stdio, --outputTransport streamableHttp, --port, --host.
+# Auth is supplied at runtime via OPENAPI_MCP_HEADERS (never baked in) and the
+# gateway key via SUPERGATEWAY_API_KEY (also never baked in).
 # --host 0.0.0.0 is explicit (supergateway's default already binds all
 # interfaces, but we don't rely on an implicit default for port publishing).
 #
-# AUTH: supergateway's --apiKey requires every request to carry the key as
-# `Authorization: Bearer <key>` (or `X-API-Key`) and answers 401 otherwise —
-# exactly the bearer contract Hermes already speaks. The key is MCP_BEARER,
-# injected from the mcp-owned env file by the quadlet, so the CMD is shell
-# form (exec form would not expand it). An empty MCP_BEARER makes the gateway
-# refuse to start rather than run unauthenticated.
+# AUTH: the gateway key is read from the SUPERGATEWAY_API_KEY environment
+# variable (supported since supergateway 4.2.0) and required as
+# `Authorization: Bearer <key>` (or `X-API-Key`); 401 otherwise — exactly the
+# bearer contract Hermes already speaks. The key is injected at runtime from
+# the mcp-owned env file via the quadlet's EnvironmentFile=.
+#
+# WHY ENV, NOT --apiKey: a CLI flag lands on the process command line, which
+# is world-readable via /proc/<pid>/cmdline and plain ps to ANY local user —
+# the mcp-user isolation protects env and files, not cmdlines. The key must
+# never appear on a cmdline.
+#
+# FAIL-CLOSED: supergateway refuses a key source that is present but empty,
+# but runs UNAUTHENTICATED when no key source is configured at all — so the
+# CMD below refuses to start when SUPERGATEWAY_API_KEY is unset or empty
+# (systemd Restart=on-failure makes the gap visible instead of serving 8013
+# wide open).
+#
+# ROTATION: supergateway accepts keys from --apiKey/--apiKeyFile/
+# SUPERGATEWAY_API_KEY/SUPERGATEWAY_API_KEY_FILE all together. The dual-key
+# overlap (zero downtime) holds for the one-time migration off the old image
+# (old --apiKey value and new env key both live). On this image only the env
+# var exists (no key-file volume is mounted), so a future rotation is a brief
+# 401-blip swap between server recreate and client .env update.
+# Procedure: deploy/KEY-ROTATION.md.
 FROM node:22-slim
 
-RUN npm install -g @notionhq/notion-mcp-server supergateway \
+# Both packages are version-pinned for deterministic deploys (supergateway
+# 4.2.0 introduced the env-var key + rotation support; 4.2.1 is current;
+# @notionhq/notion-mcp-server 2.6.1 is what a build-time resolution resolves
+# today, made explicit). Bump deliberately.
+RUN npm install -g @notionhq/notion-mcp-server@2.6.1 supergateway@4.2.1 \
     && npm cache clean --force
 
 EXPOSE 8013
 
-CMD supergateway --stdio notion-mcp-server --outputTransport streamableHttp --port 8013 --host 0.0.0.0 --apiKey "$MCP_BEARER"
+# Shell form on purpose: the guard needs env expansion, and `exec` replaces
+# the shell so the gateway itself becomes PID 1 (clean signals, no key ever
+# on any cmdline).
+CMD [ -n "$SUPERGATEWAY_API_KEY" ] \
+  || { echo "FATAL: SUPERGATEWAY_API_KEY not set or empty (refusing to start unauthenticated)" >&2; exit 1; } \
+  && exec supergateway --stdio notion-mcp-server --outputTransport streamableHttp --port 8013 --host 0.0.0.0

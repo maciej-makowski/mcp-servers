@@ -103,26 +103,37 @@ fi
 # (Duplicated from install.sh on purpose — see the NOTE in the header.)
 INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"update-check","version":"0"}}}'
 
+# Build a curl stdin-config (-K -) with the MCP probe headers. The key is
+# passed via stdin config, never as a CLI argument, so it never lands on a
+# process cmdline (same rule the gateway itself follows).
+_mcp_probe_headers() {
+  printf 'header = "Authorization: Bearer %s"\n' "$1"
+  printf 'header = "Content-Type: application/json"\n'
+  printf 'header = "Accept: application/json, text/event-stream"\n'
+}
+
 verify_one() {
   local name="$1" port="$2" envfile="$3" bearer good wrong
   # Strip optional surrounding quotes ("value" or 'value' -> value). The
   # bearer is never printed.
-  bearer="$(grep -E '^MCP_BEARER=' "$envfile" | tail -1 | cut -d= -f2-)" \
-    || fail "no MCP_BEARER in $envfile"
+  # Notion's gateway key lives in SUPERGATEWAY_API_KEY (supergateway env-var
+  # auth, see deploy/README.md); the other servers keep MCP_BEARER. Prefer
+  # SUPERGATEWAY_API_KEY when both exist (dual-key overlap window).
+  if grep -qE '^SUPERGATEWAY_API_KEY=' "$envfile"; then
+    bearer="$(grep -E '^SUPERGATEWAY_API_KEY=' "$envfile" | tail -1 | cut -d= -f2- || true)"
+    [ -n "$bearer" ] || fail "SUPERGATEWAY_API_KEY present but empty in $envfile"
+  else
+    bearer="$(grep -E '^MCP_BEARER=' "$envfile" | tail -1 | cut -d= -f2-)" \
+      || fail "no SUPERGATEWAY_API_KEY/MCP_BEARER in $envfile"
+  fi
   bearer="${bearer%\"}"; bearer="${bearer#\"}"
   bearer="${bearer%\'}"; bearer="${bearer#\'}"
-  [ -n "$bearer" ] || fail "MCP_BEARER empty in $envfile"
+  [ -n "$bearer" ] || fail "gateway key empty in $envfile"
 
-  good="$(curl -s -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $bearer" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    -d "$INIT_BODY" "http://127.0.0.1:${port}/mcp" || true)"
-  wrong="$(curl -s -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer definitely-wrong-token" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    -d "$INIT_BODY" "http://127.0.0.1:${port}/mcp" || true)"
+  good="$(_mcp_probe_headers "$bearer" | curl -s -o /dev/null -w '%{http_code}' \
+    -K - -d "$INIT_BODY" "http://127.0.0.1:${port}/mcp" || true)"
+  wrong="$(_mcp_probe_headers "definitely-wrong-token" | curl -s -o /dev/null -w '%{http_code}' \
+    -K - -d "$INIT_BODY" "http://127.0.0.1:${port}/mcp" || true)"
 
   if [ "$good" = "200" ] && [ "$wrong" = "401" ]; then
     log "  OK $name (127.0.0.1:$port): correct bearer 200, wrong bearer 401"
