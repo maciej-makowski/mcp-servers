@@ -32,10 +32,12 @@
 # Procedure: deploy/KEY-ROTATION.md.
 FROM node:22-slim
 
-# Both packages are version-pinned for deterministic deploys (supergateway
-# 4.2.0 introduced the env-var key + rotation support; 4.2.1 is current;
-# @notionhq/notion-mcp-server 2.6.1 is what a build-time resolution resolves
-# today, made explicit). Bump deliberately.
+# Both direct deps are version-pinned (supergateway 4.2.0 introduced the
+# env-var key + rotation support; 4.2.1 is current; @notionhq/notion-mcp-server
+# 2.6.1 is what a build-time resolution resolves today, made explicit).
+# Transitive deps still resolve at build time (no lockfile) — acceptable for
+# this thin wrapper; an npm lockfile would be the full reproducibility fix.
+# Bump deliberately.
 RUN npm install -g @notionhq/notion-mcp-server@2.6.1 supergateway@4.2.1 \
     && npm cache clean --force
 

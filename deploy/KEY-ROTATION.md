@@ -33,7 +33,10 @@ call).
 ## One-time migration (notion, off the pre-env-key image)
 
 Only relevant while the OLD image (key passed as `--apiKey` argv) is running.
-supergateway unions all sources, so during migration BOTH keys work:
+supergateway unions all sources, so during migration BOTH keys work — provided
+the running image's supergateway is ≥ 4.2.0 (it was build-time-resolved and
+unpinned; preflight: `podman exec mcp-notion npm ls -g supergateway`). Step 3's
+old-200/new-200 check catches the contrary, so the procedure stays fail-safe:
 
 1. Generate a new value (Maciek): `openssl rand -hex 32` → `[SECRET:NOTION_MCP_BEARER_NEW]`
 2. In `/home/mcp/env/notion.env` ADD `SUPERGATEWAY_API_KEY=[SECRET:NOTION_MCP_BEARER_NEW]` (keep `MCP_BEARER=<old>` and the quadlet flag during overlap)
