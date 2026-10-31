@@ -107,11 +107,17 @@ verify_one() {
   local name="$1" port="$2" envfile="$3" bearer good wrong
   # Strip optional surrounding quotes ("value" or 'value' -> value). The
   # bearer is never printed.
-  bearer="$(grep -E '^MCP_BEARER=' "$envfile" | tail -1 | cut -d= -f2-)" \
-    || fail "no MCP_BEARER in $envfile"
+  # Notion's gateway key lives in SUPERGATEWAY_API_KEY (supergateway env-var
+  # auth, see deploy/README.md); the other servers keep MCP_BEARER. Prefer
+  # SUPERGATEWAY_API_KEY when both exist (dual-key overlap window).
+  bearer="$(grep -E '^SUPERGATEWAY_API_KEY=' "$envfile" | tail -1 | cut -d= -f2- || true)"
+  if [ -z "$bearer" ]; then
+    bearer="$(grep -E '^MCP_BEARER=' "$envfile" | tail -1 | cut -d= -f2-)" \
+      || fail "no SUPERGATEWAY_API_KEY/MCP_BEARER in $envfile"
+  fi
   bearer="${bearer%\"}"; bearer="${bearer#\"}"
   bearer="${bearer%\'}"; bearer="${bearer#\'}"
-  [ -n "$bearer" ] || fail "MCP_BEARER empty in $envfile"
+  [ -n "$bearer" ] || fail "gateway key empty in $envfile"
 
   good="$(curl -s -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $bearer" \

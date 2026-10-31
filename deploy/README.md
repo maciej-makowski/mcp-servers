@@ -46,15 +46,28 @@ captures supergateway stdout only.
 ## Notion endpoint auth (8013)
 
 The notion image is the official npm `@notionhq/notion-mcp-server` proxied by
-supergateway. supergateway's `--apiKey` flag (verified against its README,
-2026-10) requires every request to carry the key as
-`Authorization: Bearer <key>` and answers 401 otherwise; `Containerfile.notion`
-passes `--apiKey "$MCP_BEARER"`, so the 8013 endpoint enforces the same bearer
-contract as google (8011) and outlook (8012). An empty `MCP_BEARER` in
-`notion.env` makes the gateway refuse to start rather than run unauthenticated.
+supergateway (version-pinned: `supergateway@4.2.1` in `Containerfile.notion` —
+4.2.0 introduced the env-var key support). The gateway key is read from the
+`SUPERGATEWAY_API_KEY` container environment variable and every request must
+carry it as `Authorization: Bearer <key>` (or `X-API-Key`), else 401 — the
+same bearer contract as google (8011) and outlook (8012).
+
+The key travels via env on purpose: a CLI flag (`--apiKey`) lands on the
+process command line, which is world-readable via `/proc/<pid>/cmdline` and
+plain `ps` to ANY local user; the mcp-user isolation protects env and files,
+not cmdlines. `Containerfile.notion` sets no key flag and its CMD refuses to
+start when `SUPERGATEWAY_API_KEY` is unset or empty (supergateway itself
+refuses an empty key source, but would run unauthenticated if no key source
+were configured at all). Rotation: supergateway accepts keys from
+`--apiKey`/`--apiKeyFile`/`SUPERGATEWAY_API_KEY`/`SUPERGATEWAY_API_KEY_FILE`
+together, so a key is rotated by adding the new one before removing the old
+(dual-key overlap, zero downtime) — the live-side sequence is in the
+bearer-cmdline-fix runbook (Hermes workspace:
+`/home/hermes/mcp-bearer-cmdline-fix-runbook.md`).
 
 Secrets live only in `/home/mcp/env/*.env` (0600, owned by `mcp`):
-`google.env`, `outlook.env`, `notion.env` carry `MCP_BEARER`
+`google.env`, `outlook.env`, `proton.env` carry `MCP_BEARER` (native
+middleware); `notion.env` carries `SUPERGATEWAY_API_KEY` (gateway auth)
 (+ `MCP_HOST`/`MCP_PORT`; notion also `OPENAPI_MCP_HEADERS`). **No secret ever
 appears in this repo, in the quadlet files, in the install script, or in
 command output.**
