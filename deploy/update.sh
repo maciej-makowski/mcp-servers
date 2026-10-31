@@ -128,7 +128,12 @@ verify_one() {
   fi
   bearer="${bearer%\"}"; bearer="${bearer#\"}"
   bearer="${bearer%\'}"; bearer="${bearer#\'}"
-  [ -n "$bearer" ] || fail "gateway key empty in $envfile"
+  # Trim like upstream supergateway does; a whitespace-only value must fail
+  # loudly here rather than mislead at the container guard.
+  trimmed="${bearer#"${bearer%%[![:space:]]*}"}"
+  trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+  [ -n "$trimmed" ] || fail "gateway key empty or whitespace-only in $envfile"
+  bearer="$trimmed"
 
   good="$(_mcp_probe_headers "$bearer" | curl -s -o /dev/null -w '%{http_code}' \
     -K - -d "$INIT_BODY" "http://127.0.0.1:${port}/mcp" || true)"
