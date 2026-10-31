@@ -60,10 +60,13 @@ start when `SUPERGATEWAY_API_KEY` is unset or empty (supergateway itself
 refuses an empty key source, but would run unauthenticated if no key source
 were configured at all). Rotation: supergateway accepts keys from
 `--apiKey`/`--apiKeyFile`/`SUPERGATEWAY_API_KEY`/`SUPERGATEWAY_API_KEY_FILE`
-together, so a key is rotated by adding the new one before removing the old
-(dual-key overlap, zero downtime) — the live-side sequence is in the
-bearer-cmdline-fix runbook (Hermes workspace:
-`/home/hermes/mcp-bearer-cmdline-fix-runbook.md`).
+together. The dual-key overlap (zero downtime) holds for the one-time
+migration off the old image (old `--apiKey` value and new env key both
+live); on the clean image only the env var exists (no key-file volume is
+mounted), so a future rotation is a brief 401-blip swap between server
+recreate and client `.env` update. The full procedure for all four servers
+(placeholders, verification matrix) lives in version control:
+[`deploy/KEY-ROTATION.md`](KEY-ROTATION.md).
 
 Secrets live only in `/home/mcp/env/*.env` (0600, owned by `mcp`):
 `google.env`, `outlook.env`, `proton.env` carry `MCP_BEARER` (native
