@@ -148,3 +148,92 @@ def test_audit_logs_dir_env_override(monkeypatch):
     monkeypatch.delenv("MCP_LOGS_DIR")
     assert importlib.reload(audit)._LOGS_DIR.endswith("mcp-logs")
     importlib.reload(audit)  # restore module state for other tests
+
+
+def test_sheets_batch_update_posts_requests_verbatim(monkeypatch):
+    import google_mcp.gsuite as gs
+    captured = {}
+
+    def batch_update(**kw):
+        captured.update(kw)
+        return {"spreadsheetId": "sid",
+                "replies": [{"addSheet": {"properties": {"sheetId": 7}}}]}
+
+    class FakeSvc:
+        class spreadsheets:
+            @staticmethod
+            def batchUpdate(**kw):
+                return type("R", (), {"execute": lambda self: batch_update(**kw)})()
+
+    monkeypatch.setattr(gs, "build_service", lambda api, v: FakeSvc())
+    # Parsed through json.loads like the tool layer does, so equality also
+    # proves the body is passed through without any re-serialization drift.
+    requests = json.loads(
+        '[{"addSheet": {"properties": {"title": "mcp-smoke"}}},'
+        ' {"deleteDimension": {"range": {"sheetId": 0, "dimension": "ROWS",'
+        ' "startIndex": 5, "endIndex": 6}}}]')
+    result = gs.sheets_batch_update("sid", requests)
+    assert captured["spreadsheetId"] == "sid"
+    assert captured["body"] == {"requests": requests}
+    assert result == {"spreadsheetId": "sid",
+                      "replies": [{"addSheet": {"properties": {"sheetId": 7}}}]}
+
+
+def test_sheets_metadata_get_forwards_fields_mask(monkeypatch):
+    import google_mcp.gsuite as gs
+    captured = {}
+
+    class FakeSvc:
+        class spreadsheets:
+            @staticmethod
+            def get(**kw):
+                captured.update(kw)
+                return type("R", (), {"execute": lambda self: {"sheets": []}})()
+
+    monkeypatch.setattr(gs, "build_service", lambda api, v: FakeSvc())
+    fields = "sheets(properties(sheetId,title),conditionalFormats)"
+    gs.sheets_metadata_get("sid", fields=fields)
+    assert captured["spreadsheetId"] == "sid" and captured["fields"] == fields
+
+    captured.clear()
+    gs.sheets_metadata_get("sid")
+    assert captured == {"spreadsheetId": "sid"}  # no mask -> no fields kwarg
+
+
+def test_sheets_create_returns_two_keys(monkeypatch):
+    import google_mcp.gsuite as gs
+    captured = {}
+
+    class FakeSvc:
+        class spreadsheets:
+            @staticmethod
+            def create(**kw):
+                captured.update(kw)
+                return type("R", (), {"execute": lambda self: {
+                    "spreadsheetId": "new-id",
+                    "properties": {"title": "Property Hunt - Daily Tracker"},
+                    "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/new-id/edit",
+                }})()
+
+    monkeypatch.setattr(gs, "build_service", lambda api, v: FakeSvc())
+    result = gs.sheets_create("Property Hunt - Daily Tracker")
+    assert captured["body"] == {"properties": {
+        "title": "Property Hunt - Daily Tracker"}}
+    assert captured["fields"] == "spreadsheetId,properties(title),spreadsheetUrl"
+    assert result == {"spreadsheetId": "new-id",
+                      "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/new-id/edit"}
+
+
+def test_new_sheets_tools_in_tools_list():
+    import asyncio
+
+    import server
+
+    tools = asyncio.run(server.mcp.list_tools())
+    by_name = {t.name: t for t in tools}
+    assert {"sheets_batch_update", "sheets_metadata_get",
+            "sheets_create"} <= set(by_name)
+    assert by_name["sheets_batch_update"].inputSchema["required"] == [
+        "sheet_id", "requests_json"]
+    assert by_name["sheets_metadata_get"].inputSchema["required"] == ["sheet_id"]
+    assert by_name["sheets_create"].inputSchema["required"] == ["title"]

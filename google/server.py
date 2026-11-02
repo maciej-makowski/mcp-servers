@@ -96,6 +96,33 @@ def sheets_update(sheet_id: str, range_name: str, values_json: str) -> str:
                       ensure_ascii=False)
 
 
+@mcp.tool()
+@audit.log_call(_S, "sheets_batch_update")
+def sheets_batch_update(sheet_id: str, requests_json: str) -> str:
+    """Apply spreadsheets.batchUpdate with a JSON array of typed Request
+    objects (e.g. updateCells / addConditionalFormatRule /
+    deleteConditionalFormatRule / deleteDimension / addSheet / deleteSheet).
+    WRITE operation."""
+    return json.dumps(gsuite.sheets_batch_update(sheet_id, json.loads(requests_json)),
+                      ensure_ascii=False)
+
+
+@mcp.tool()
+@audit.log_call(_S, "sheets_metadata_get")
+def sheets_metadata_get(sheet_id: str, fields: str = "") -> str:
+    """Read spreadsheet metadata (sheets/properties/conditionalFormats) via a
+    fields mask. Read-only."""
+    return json.dumps(gsuite.sheets_metadata_get(sheet_id, fields), ensure_ascii=False)
+
+
+@mcp.tool()
+@audit.log_call(_S, "sheets_create")
+def sheets_create(title: str) -> str:
+    """Create a new spreadsheet; returns spreadsheetId + spreadsheetUrl.
+    WRITE operation."""
+    return json.dumps(gsuite.sheets_create(title), ensure_ascii=False)
+
+
 def _resolve_run_mode() -> tuple:
     """Return ('stdio',) or ('http', host, port).
 

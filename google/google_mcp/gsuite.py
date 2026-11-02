@@ -62,3 +62,25 @@ def sheets_update(sheet_id: str, range_name: str, values: list) -> dict:
         valueInputOption="USER_ENTERED", body={"values": values}).execute()
     return {"updatedCells": result.get("updatedCells", 0),
             "updatedRange": result.get("updatedRange", "")}
+
+
+def sheets_batch_update(sheet_id: str, requests: list) -> dict:
+    result = build_service("sheets", "v4").spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id, body={"requests": requests}).execute()
+    return {"spreadsheetId": result.get("spreadsheetId", ""),
+            "replies": result.get("replies", [])}
+
+
+def sheets_metadata_get(sheet_id: str, fields: str = "") -> dict:
+    kw = {"spreadsheetId": sheet_id}
+    if fields:
+        kw["fields"] = fields
+    return build_service("sheets", "v4").spreadsheets().get(**kw).execute()
+
+
+def sheets_create(title: str) -> dict:
+    result = build_service("sheets", "v4").spreadsheets().create(
+        body={"properties": {"title": title}},
+        fields="spreadsheetId,properties(title),spreadsheetUrl").execute()
+    return {"spreadsheetId": result.get("spreadsheetId", ""),
+            "spreadsheetUrl": result.get("spreadsheetUrl", "")}
