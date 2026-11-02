@@ -120,7 +120,15 @@ the correct bearer → 200; wrong bearer → 401).
 ## Update (run as the `mcp` user)
 
 ```bash
-sudo -u mcp /path/to/mcp-servers/deploy/update.sh
+# mcp cannot traverse /home/hermes — stage the tree to /tmp first (verified
+# live 2026-11-02; /tmp dirs are world-readable under the default umask):
+rm -rf /tmp/mcp-servers-deploy && cp -R ~/mcp-servers /tmp/mcp-servers-deploy
+sudo -u mcp /tmp/mcp-servers-deploy/deploy/update.sh
+# Staging dirs can be rm -rf'd afterwards. Quadlet files under
+# ~/.config/containers/systemd/ must stay owned by mcp — a root-owned quadlet
+# makes update.sh-as-mcp fail at the install step ("cp: cannot create regular
+# file ... Permission denied"); fix with
+#   sudo chown mcp:mcp /home/mcp/.config/containers/systemd/*.container
 ```
 
 `update.sh` is the lightweight rolling update: for each quadlet it pulls the

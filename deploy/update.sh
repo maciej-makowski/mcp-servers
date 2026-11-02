@@ -2,7 +2,10 @@
 #
 # deploy/update.sh — lightweight rolling update for the MCP quadlets.
 #
-# RUN AS THE MCP USER (or root acting for it, e.g. sudo -u mcp deploy/update.sh).
+# RUN AS THE MCP USER (or root acting for it). mcp cannot traverse
+# /home/hermes — stage this tree to /tmp first:
+#   rm -rf /tmp/mcp-servers-deploy && cp -R <clone> /tmp/mcp-servers-deploy
+#   sudo -u mcp /tmp/mcp-servers-deploy/deploy/update.sh
 #
 # For each quadlet in this directory:
 #   1. pull the image named in the .container file (multi-arch, arm64 resolved);
