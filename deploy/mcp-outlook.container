@@ -22,6 +22,14 @@
 # under a .lock file), so the mount must be read-write and the host dir must be
 # owned by the mcp user (uid mapped through rootless podman; :Z relabels).
 #
+# Spool mount (mcp_files_design Design B recipe, deployed live Oct 31 — this
+# server was the FIRST spool participant and its e2e round-trip verified both
+# directions): shares the /srv/mcp_files send/receive tree with the agent side.
+# UserNS=keep-id:uid=0,gid=0 keeps container-root mapping to host mcp;
+# GroupAdd=keep-groups passes the host supplementary groups through; the
+# UV_CACHE_DIR/HOME pins are the PR #26 keep-id compatibility fix (uv must not
+# write into the image fs it does not own).
+#
 # Image NOT digest-pinned yet — digest pinning follows the signal-cli pattern
 # once the digests are stable (see deploy/README.md).
 [Unit]
@@ -30,6 +38,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Container]
+UserNS=keep-id:uid=0,gid=0
+GroupAdd=keep-groups
+Volume=/srv/mcp_files:/srv/mcp_files:Z
+Environment=UV_CACHE_DIR=/tmp/uv-cache
+Environment=HOME=/root
 Image=ghcr.io/maciej-makowski/mcp-outlook:latest
 ContainerName=mcp-outlook
 # MCP_BEARER, MCP_HOST, MCP_PORT from the mcp-owned env file (0600).
