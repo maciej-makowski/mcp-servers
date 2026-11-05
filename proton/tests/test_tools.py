@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 import subprocess
 from pathlib import Path
 
@@ -635,6 +636,28 @@ def test_drive_download_requires_path(rec):
 def test_drive_download_never_in_dispatched_dry_run(rec):
     tools.DRIVE_TOOL.dispatch("download", {"path": "/x", "dest_dir": ".", "confirm": False})
     assert "--dry-run" not in rec["argv"]
+
+
+def test_drive_download_chmods_single_target(rec, tmp_path):
+    dest = tmp_path / "out"
+    dest.mkdir()
+    target = dest / "report.pdf"
+    target.write_bytes(b"x")
+    target.chmod(0o600)
+    rec["proc"] = make_proc(stdout="")
+    r = tools.DRIVE_TOOL.dispatch("download", {"path": "/Documents/report.pdf", "dest_dir": str(dest)})
+    assert r["success"] is True
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_drive_download_recursive_leaves_modes(rec, tmp_path):
+    dest = tmp_path / "out"
+    dest.mkdir()
+    target = dest / "keep.bin"
+    target.write_bytes(b"x")
+    target.chmod(0o600)
+    tools.DRIVE_TOOL.dispatch("download", {"path": "/Docs", "dest_dir": str(dest), "recursive": True})
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
 # --- Task 4a polish: re-review fixes ----------------------------------------------
