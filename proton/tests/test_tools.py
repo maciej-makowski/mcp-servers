@@ -380,6 +380,38 @@ def test_upload_existing_path_uses_positional_args(rec, tmp_path):
     assert r["applied"] is True
 
 
+def test_upload_if_exists_passthrough(rec, tmp_path):
+    f = tmp_path / "real.txt"
+    f.write_text("hi")
+    rec["proc"] = proc_json({"id": "9"})
+    r = tools.DRIVE_TOOL.dispatch(
+        "upload", {"path": str(f), "dir": "/docs", "if_exists": "replace", "confirm": True}
+    )
+    args = tail_without_globals(rec["argv"])
+    i = args.index("--if-exists")
+    assert args[i + 1] == "replace"
+    assert r["applied"] is True
+
+
+def test_upload_if_exists_invalid_value_rejected(rec, tmp_path):
+    f = tmp_path / "real.txt"
+    f.write_text("hi")
+    r = tools.DRIVE_TOOL.dispatch(
+        "upload", {"path": str(f), "if_exists": "clobber", "confirm": True}
+    )
+    assert r["success"] is False
+    assert "if_exists" in r["error"]
+    assert rec["argv"] == []
+
+
+def test_drive_get_accepts_path_target(rec):
+    rec["proc"] = proc_json({"name": "DESIGN-INDEX.md"})
+    tools.DRIVE_TOOL.dispatch("get", {"path": "/hermes-designs/DESIGN-INDEX.md"})
+    args = tail_without_globals(rec["argv"])
+    assert args[:3] == ["drive", "items", "get"]
+    assert args[3] == "/hermes-designs/DESIGN-INDEX.md"
+
+
 # --- argv shape for key verbs -----------------------------------------------------
 
 
