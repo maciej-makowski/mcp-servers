@@ -14,6 +14,11 @@
 #
 # Like the other three: loopback-only publish; MCP_LOGS_DIR pattern not needed here —
 # proton_mcp has no audit-logging layer (logs go to the unit journal).
+#
+# Spool mount (mcp_files_design Design B recipe, deployed live Nov 4): shares the
+# /srv/mcp_files send/receive tree with the agent side. UserNS=keep-id:uid=0,gid=0
+# keeps container-root mapping to host mcp; GroupAdd=keep-groups passes the host
+# supplementary groups through so spool writes keep the mcp/mcpfiles ownership model.
 [Unit]
 Description=proton-mcp HTTP server (isolated)
 After=network-online.target
@@ -26,6 +31,9 @@ EnvironmentFile=%h/env/proton.env
 PublishPort=127.0.0.1:8010:8010
 Volume=%h/bin/proton:/root/.hermes/bin/proton:Z
 Volume=%h/.config/proton-cli:/root/.config/proton-cli:Z
+Volume=/srv/mcp_files:/srv/mcp_files:Z
+UserNS=keep-id:uid=0,gid=0
+GroupAdd=keep-groups
 
 [Service]
 Restart=on-failure
