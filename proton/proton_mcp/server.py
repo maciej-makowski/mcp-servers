@@ -101,9 +101,14 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "gated": tuple(sorted(tools.DRIVE_TOOL.GATED_ACTIONS)),
         "filter": False,
         "extra_params": {
-            "id": {"type": "string", "description": "Item id (get)"},
+            "id": {"type": "string", "description": "Item id or drive item path (get; the CLI resolves the argument as a path)"},
             "dir": {"type": "string", "description": "Drive directory (list) or destination dir (upload)"},
-            "path": {"type": "string", "description": "Drive item path (download) or local file (upload)"},
+            "path": {"type": "string", "description": "Drive item path (download, get) or local file (upload)"},
+            "if_exists": {
+                "type": "string",
+                "enum": ["replace", "rename", "skip"],
+                "description": "Collision policy on upload (CLI --if-exists); default: the CLI errors when the destination file already exists",
+            },
             "dest_dir": {"type": "string", "description": "Local directory to download into"},
             "recursive": {"type": "boolean", "description": "Download directories recursively"},
             "force": {"type": "boolean", "description": "Overwrite existing local files"},
@@ -300,7 +305,6 @@ async def _run_stdio() -> None:
     server = make_server()
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
-
 
 # ---------------------------------------------------------------------------
 # HTTP transport (streamable-http) with bearer-token auth
