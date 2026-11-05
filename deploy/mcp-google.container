@@ -21,6 +21,11 @@
 # os.replace), so the mount must be read-write and the host dir must be owned
 # by the mcp user (uid mapped through rootless podman; :Z relabels for SELinux).
 #
+# Spool mount (mcp_files_design Design B recipe, deployed live Nov 4): shares the
+# /srv/mcp_files send/receive tree with the agent side. UserNS=keep-id:uid=0,gid=0
+# keeps container-root mapping to host mcp; GroupAdd=keep-groups passes the host
+# supplementary groups through so spool writes keep the mcp/mcpfiles ownership model.
+#
 # Image NOT digest-pinned yet — digest pinning follows the signal-cli pattern
 # once the digests are stable (see deploy/README.md).
 [Unit]
@@ -42,6 +47,9 @@ Volume=%h/google-token:/root/.hermes:Z
 # MCP_LOGS_DIR env override, so this must match the /app/logs mount above.
 Environment=MCP_LOGS_DIR=/app/logs
 Volume=%h/mcp-logs/google:/app/logs:Z
+Volume=/srv/mcp_files:/srv/mcp_files:Z
+UserNS=keep-id:uid=0,gid=0
+GroupAdd=keep-groups
 
 [Service]
 Restart=on-failure
