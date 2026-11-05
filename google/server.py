@@ -81,6 +81,17 @@ def drive_search(query: str, max_results: int = 10) -> str:
 
 
 @mcp.tool()
+@audit.log_call(_S, "drive_upload")
+def drive_upload(local_path: str, name: str = "") -> str:
+    """Upload a file from the shared spool into Drive.
+
+    local_path must resolve under /srv/mcp_files/send — the only directory
+    shared with the agent side; anything else is refused. Resumable, any
+    file size. WRITE operation."""
+    return json.dumps(gsuite.drive_upload(local_path, name), ensure_ascii=False)
+
+
+@mcp.tool()
 @audit.log_call(_S, "sheets_get")
 def sheets_get(sheet_id: str, range_name: str) -> str:
     """Read a range from a Google Sheet. Read-only."""
