@@ -237,3 +237,72 @@ def test_new_sheets_tools_in_tools_list():
         "sheet_id", "requests_json"]
     assert by_name["sheets_metadata_get"].inputSchema["required"] == ["sheet_id"]
     assert by_name["sheets_create"].inputSchema["required"] == ["title"]
+
+
+def test_drive_upload_spool_containment(monkeypatch, tmp_path):
+    import google_mcp.gsuite as g
+
+    monkeypatch.setattr(g, "SPOOL_SEND_ROOT", tmp_path / "send")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x")
+    with pytest.raises(ValueError):
+        g.drive_upload(str(outside))
+
+
+def test_drive_upload_happy_path_resumable(monkeypatch, tmp_path):
+    import google_mcp.gsuite as g
+
+    monkeypatch.setattr(g, "SPOOL_SEND_ROOT", tmp_path / "send")
+    (tmp_path / "send").mkdir()
+    inside = tmp_path / "send" / "doc.md"
+    inside.write_text("hello")
+
+    class Chunk:
+        def __init__(self, payload):
+            self._payload = payload
+            self._calls = 0
+
+        def next_chunk(self):
+            self._calls += 1
+            assert self._calls <= 2
+            if self._calls == 1:
+                return None, None
+            return True, self._payload
+
+    class Files:
+        def create(self, body, media_body, fields):
+            assert body["name"] == "doc.md"
+            assert fields == "id,name,size,mimeType,webViewLink"
+            return Chunk({"id": "f1", "name": "doc.md", "size": "5",
+                          "mimeType": "text/markdown",
+                          "webViewLink": "https://docs.example/f1"})
+
+    class Svc:
+        def files(self):
+            return Files()
+
+    monkeypatch.setattr(g, "build_service", lambda api, ver: Svc())
+    out = g.drive_upload(str(inside))
+    assert out == {"id": "f1", "name": "doc.md", "size": "5",
+                   "mimeType": "text/markdown",
+                   "webViewLink": "https://docs.example/f1"}
+
+
+def test_drive_upload_missing_file(monkeypatch, tmp_path):
+    import google_mcp.gsuite as g
+
+    monkeypatch.setattr(g, "SPOOL_SEND_ROOT", tmp_path / "send")
+    (tmp_path / "send").mkdir()
+    with pytest.raises(ValueError):
+        g.drive_upload(str(tmp_path / "send" / "nope.txt"))
+
+
+def test_drive_upload_tool_in_tools_list():
+    import asyncio
+
+    import server
+
+    tools = asyncio.run(server.mcp.list_tools())
+    by_name = {t.name: t for t in tools}
+    assert "drive_upload" in by_name
+    assert by_name["drive_upload"].inputSchema["required"] == ["local_path"]
