@@ -328,7 +328,20 @@ class DriveTool(_BaseTool):
                 args.append("--force")
             # Download is a read (writes only into the caller-named dir):
             # never issued with --dry-run, so no belt-and-braces check.
-            return self._run(args)
+            res = self._run(args)
+            # Shared-spool use: the CLI's in-container umask writes single-file
+            # downloads as 0600, which locks the agent out of receive-dir
+            # copies (live-verified Nov 5). Relax the single-file target to
+            # 0644, best-effort — a chmod failure must not fail a download.
+            # Recursive trees are left untouched (modes vary by content).
+            try:
+                if not params.get("recursive"):
+                    target = Path(dest_dir) / Path(str(path)).name
+                    if target.is_file():
+                        target.chmod(0o644)
+            except OSError:
+                pass
+            return res
         raise ValueError(f"unknown read action {action!r} for drive")
 
     def _mutate(self, action: str, params: dict, dry_run: bool = False) -> dict:
