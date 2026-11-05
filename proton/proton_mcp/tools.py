@@ -305,9 +305,15 @@ class DriveTool(_BaseTool):
                 args.append(str(params["dir"]))
             return self._run(args)
         if action == "get":
-            if not params.get("id"):
-                return self._validation_error("get requires 'id'")
-            return self._run(["drive", "items", "get", str(params["id"])])
+            # The CLI's `drive items get` resolves its argument as a PATH,
+            # not a link id. Accept either key name ('id' kept for callers
+            # written against the old schema).
+            target = params.get("path") or params.get("id")
+            if not target:
+                return self._validation_error(
+                    "get requires 'id' or 'path' (drive item path)"
+                )
+            return self._run(["drive", "items", "get", str(target)])
         if action == "download":
             path = params.get("path")
             if not path:
@@ -335,6 +341,13 @@ class DriveTool(_BaseTool):
             args = ["drive", "items", "upload", str(path)]
             if params.get("dir"):
                 args.append(str(params["dir"]))  # CLI: positional DEST
+            if_exists = params.get("if_exists")
+            if if_exists is not None:
+                if if_exists not in ("replace", "rename", "skip"):
+                    return self._validation_error(
+                        "upload 'if_exists' must be one of: replace, rename, skip"
+                    )
+                args += ["--if-exists", str(if_exists)]
             return self._run(args, dry_run=dry_run)
         if action == "trash":
             refs = params.get("refs") or ([params["id"]] if params.get("id") else None)
