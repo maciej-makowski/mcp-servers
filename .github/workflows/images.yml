@@ -31,6 +31,9 @@ jobs:
           - name: proton
             dir: proton
             pytest_cmd: uv run --extra dev pytest
+          - name: strava
+            dir: strava
+            pytest_cmd: uv run --extra dev pytest
           - name: garmin
             dir: garmin
             pytest_cmd: uv run pytest
@@ -48,6 +51,7 @@ jobs:
       outlook: ${{ steps.filter.outputs.outlook }}
       notion: ${{ steps.filter.outputs.notion }}
       proton: ${{ steps.filter.outputs.proton }}
+      strava: ${{ steps.filter.outputs.strava }}
       garmin: ${{ steps.filter.outputs.garmin }}
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +74,11 @@ jobs:
               - '.github/workflows/images.yml'
             proton:
               - 'proton/**'
+              - '.github/workflows/images.yml'
+            strava:
+              - 'strava/**'
+              - '_shared/**'
+              - 'Containerfile.strava'
               - '.github/workflows/images.yml'
             garmin:
               - 'garmin/**'
@@ -98,6 +107,9 @@ jobs:
           - name: proton
             dockerfile: proton/Containerfile
             context: proton
+          - name: strava
+            dockerfile: Containerfile.strava
+            context: .
           - name: garmin
             dockerfile: Containerfile.garmin
             context: .
