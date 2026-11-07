@@ -170,7 +170,13 @@ install.sh.
 templates in sync with the deployed reality — a drifted template (e.g. one
 missing a spool mount that was added live) silently drops that mount on the
 next recreate. Templates were synced with the deployed state as of Nov 5
-(proton + google in PR #30, outlook in this PR).
+(proton + google in PR #30, outlook in PR #31).
+
+**Quadlet files under `~/.config/containers/systemd/` must stay owned by
+`mcp`.** A root-owned deployed `.container` makes `update.sh`-as-mcp fail at
+the install step (`cp: cannot create regular file ... Permission denied`);
+fix with `sudo chown mcp:mcp /home/mcp/.config/containers/systemd/*.container`
+(live-verified 2026-11-02, when the outlook quadlet had been left root-owned).
 
 ## Verify (as `mcp`, any time)
 
