@@ -31,6 +31,9 @@ jobs:
           - name: proton
             dir: proton
             pytest_cmd: uv run --extra dev pytest
+          - name: garmin
+            dir: garmin
+            pytest_cmd: uv run pytest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -45,6 +48,7 @@ jobs:
       outlook: ${{ steps.filter.outputs.outlook }}
       notion: ${{ steps.filter.outputs.notion }}
       proton: ${{ steps.filter.outputs.proton }}
+      garmin: ${{ steps.filter.outputs.garmin }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -66,6 +70,11 @@ jobs:
               - '.github/workflows/images.yml'
             proton:
               - 'proton/**'
+              - '.github/workflows/images.yml'
+            garmin:
+              - 'garmin/**'
+              - '_shared/**'
+              - 'Containerfile.garmin'
               - '.github/workflows/images.yml'
 
   build:
@@ -89,6 +98,9 @@ jobs:
           - name: proton
             dockerfile: proton/Containerfile
             context: proton
+          - name: garmin
+            dockerfile: Containerfile.garmin
+            context: .
     steps:
       - name: Skip if no relevant changes
         id: skip
