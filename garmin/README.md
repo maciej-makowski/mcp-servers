@@ -71,3 +71,7 @@ MCP_BEARER=x MCP_PORT=8016 uv run python server.py
 ```
 
 Deployment (quadlet, install.sh and update.sh wiring, key-rotation runbook) ships in the deploy PR; the house pattern is documented in `deploy/README.md`.
+
+---
+
+Status: Phase 1 skeleton (the `garmin/` package, its container build and CI wiring). Deploy wiring lands in the deploy PR. Underlying design: `garmin-connect-integration-design-final.md` Rev 8, adopted Nov 7 2026.
