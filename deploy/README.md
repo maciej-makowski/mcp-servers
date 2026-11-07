@@ -42,7 +42,7 @@ exchange tree at `/srv/mcp_files` (mounted `uid=mcp,gid=mcpfiles,mode=2770`):
 |---|---|---|
 | `mcp-outlook` | Oct 31 | first participant; e2e round-trip verified both directions |
 | `mcp-proton`  | Nov 4  | `proton_drive` upload/download verified e2e Nov 5 (registry flip over MCP) |
-| `mcp-google`  | Nov 4  | mount live; `drive_upload` verified e2e Nov 5 (spool probe → Drive file → drive_search hit) |
+| `mcp-google`  | Nov 4  | mount live; no upload tool yet (needs the `drive.file` scope) |
 | `mcp-notion`  | —     | deliberately not mounted (no upload tools; artifacts live on Drive) |
 
 Subdirs `send/` and `receive/` are `2771 hermes:mcpfiles`: the agent writes
@@ -52,8 +52,8 @@ boot (d-type, `2771 hermes:mcpfiles`); without it a reboot wipes them and
 breaks every spool bind at statfs (agent sandbox spawns included, live-verified
 Nov 5). Agent-side recipe: stage a file into `send/` (mode 644), then the
 container's upload tool reads it in-container. Downloads land in `receive/`
-owned by `mcp`; single-file proton downloads are relaxed to `0644` by the
-wrapper so the agent can read them back.
+owned by `mcp` mode `0600` — the agent cannot read those back until the
+wrappers chmod after download (parked).
 
 ## Audit logs
 
