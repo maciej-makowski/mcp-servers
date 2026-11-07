@@ -1,0 +1,38 @@
+# User-mode quadlet for the `mcp` user: strava-mcp HTTP server (strava design
+# section 3.2, option A, port 8016). Image from the monorepo's images.yml
+# workflow (Containerfile.strava, multi-arch).
+#
+# Bearer auth is enforced by the shared _shared/mcp_auth.require_bearer
+# middleware (MCP_BEARER from the env file, fail-closed).
+#
+# Two directory mounts, both mcp-owned on the host and created idempotently
+# by deploy/install.sh:
+#   - %h/strava-token -> /app/data: the token store (token.json, 0600,
+#     rewritten atomically under flock by every refresh)
+#   - %h/mcp-logs/strava -> /app/logs: audit JSONL (the google/outlook
+#     MCP_LOGS_DIR pattern; without the override the audit module defaults
+#     to ~/.hermes/mcp-logs, which is what native stdio runs use)
+#
+# Like the others: loopback-only publish. No spool mount and no keep-id
+# mapping: strava-mcp touches only these two volumes.
+[Unit]
+Description=strava-mcp HTTP server (isolated)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/maciej-makowski/mcp-strava:latest
+ContainerName=mcp-strava
+EnvironmentFile=%h/env/strava.env
+PublishPort=127.0.0.1:8016:8016
+Volume=%h/strava-token:/app/data:Z
+Volume=%h/mcp-logs/strava:/app/logs:Z
+Environment=MCP_LOGS_DIR=/app/logs
+
+[Service]
+Restart=on-failure
+RestartSec=5
+MemoryMax=384M
+
+[Install]
+WantedBy=default.target

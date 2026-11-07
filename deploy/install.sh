@@ -8,8 +8,8 @@
 # — root acting for mcp is fine; podman is rootless either way).
 #
 # What it does:
-#   1. pulls the 4 multi-arch images from ghcr.io (google/outlook/notion for
-#      the quadlets, plus mcp-proton for the later proton quadlet);
+#   1. pulls the 5 multi-arch images from ghcr.io (google/outlook/notion for
+#      the quadlets, plus mcp-proton and mcp-strava);
 #   2. installs the .container files into ~/.config/containers/systemd/;
 #   3. systemd --user daemon-reload;
 #   4. stops + removes any pre-existing containers, then starts the units (a
@@ -33,13 +33,14 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
 fi
 
 GHCR=ghcr.io/maciej-makowski
-IMAGES=("$GHCR/mcp-google:latest" "$GHCR/mcp-outlook:latest" "$GHCR/mcp-notion:latest" "$GHCR/mcp-proton:latest")
+IMAGES=("$GHCR/mcp-google:latest" "$GHCR/mcp-outlook:latest" "$GHCR/mcp-notion:latest" "$GHCR/mcp-proton:latest" "$GHCR/mcp-strava:latest")
 
 SERVICES=(
   "mcp-google:8011:%h/env/google.env"
   "mcp-outlook:8012:%h/env/outlook.env"
   "mcp-proton:8010:%h/env/proton.env"
   "mcp-notion:8013:%h/env/notion.env"
+  "mcp-strava:8016:%h/env/strava.env"
 )
 
 UNIT_DIR="$HOME/.config/containers/systemd"
@@ -55,8 +56,17 @@ log() { printf '[install] %s\n' "$*"; }
 
 fail() { printf '[install] FATAL: %s\n' "$*" >&2; exit 1; }
 
+# --------------------------------------------------- idempotent strava dirs
+# The strava token store and its audit logs live in dedicated mcp-owned
+# directories. `install -d` is idempotent; -o/-g keep the ownership right
+# even when the script runs as root acting for mcp, so no manual chown is
+# needed (strava design section 3.2). Mode 700 keeps the token store
+# mcp-only, like the other token volumes.
+install -d -o mcp -g mcp -m 700 "$HOME/strava-token" "$HOME/mcp-logs/strava" \
+  || fail "creating $HOME/strava-token and $HOME/mcp-logs/strava"
+
 # ---------------------------------------------------------------- pull images
-log "pulling 4 images from ghcr (multi-arch, arm64 resolved)..."
+log "pulling 5 images from ghcr (multi-arch, arm64 resolved)..."
 for img in "${IMAGES[@]}"; do
   podman pull "$img" || fail "podman pull $img"
   log "  pulled $img"
