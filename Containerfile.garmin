@@ -1,0 +1,27 @@
+# Multi-arch (linux/amd64 + linux/arm64) — tag verified on ghcr.io/astral-sh/uv.
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+# Preserve repo layout: garmin/pyproject.toml expects ../_shared/mcp_auth.
+COPY _shared/ /app/_shared/
+COPY garmin/ /app/garmin/
+
+WORKDIR /app/garmin
+ENV UV_LINK_MODE=copy
+# No --frozen: locks are (re)generated at build time per ruling.
+RUN uv sync --no-dev
+
+ENV MCP_HOST=0.0.0.0
+ENV MCP_PORT=8016
+
+# keep-id compatibility (Design B spool, 2026-10-31): under --userns=keep-id the
+# container's root maps to host uid mcp while the image layers were unpacked
+# under the default subuid mapping — the process owns NOTHING in the image fs,
+# and uv's first write (its cache dir under WORKDIR) fails with EACCES.
+# Put the runtime cache in the container's world-writable /tmp and stop uv from
+# touching the baked .venv (it matches uv.lock by construction — verified
+# empirically 2026-10-31). ENV sits AFTER `RUN uv sync` so build-time cache
+# behaviour is unchanged.
+ENV UV_CACHE_DIR=/tmp/uv-cache
+
+# HTTP mode additionally requires MCP_BEARER at runtime (fail closed).
+CMD ["uv", "run", "--no-sync", "python", "server.py"]
