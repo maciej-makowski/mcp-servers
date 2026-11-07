@@ -2,10 +2,11 @@
 #
 # deploy/update.sh — lightweight rolling update for the MCP quadlets.
 #
-# RUN AS THE MCP USER (or root acting for it). mcp cannot traverse
-# /home/hermes — stage this tree to /tmp first:
-#   rm -rf /tmp/mcp-servers-deploy && cp -R <clone> /tmp/mcp-servers-deploy
-#   sudo -u mcp /tmp/mcp-servers-deploy/deploy/update.sh
+# RUN AS THE MCP USER (or root acting for it, e.g. sudo -u mcp deploy/update.sh).
+# NOTE: run from an mcp-readable copy — the mcp user cannot traverse
+# /home/hermes, so a checkout living there must be staged first:
+#   cp -r <repo>/deploy /tmp/deploy-staged && cd /tmp/deploy-staged && bash update.sh
+# (the guard below fails loud with this recipe; live-verified Nov 5).
 #
 # For each quadlet in this directory:
 #   1. pull the image named in the .container file (multi-arch, arm64 resolved);
@@ -51,6 +52,13 @@ fail() { printf '[update] FATAL: %s\n' "$*" >&2; exit 1; }
 # image: the Image= line of the quadlet; name: the ContainerName= line.
 image_of() { grep -E '^Image=' "$1" | tail -1 | cut -d= -f2-; }
 name_of() { grep -E '^ContainerName=' "$1" | tail -1 | cut -d= -f2-; }
+
+# The mcp user cannot traverse /home/hermes — a checkout living there is
+# unreadable here, and the failure would surface as a cryptic grep error
+# mid-run (live-verified Nov 5). Fail loud with the recipe instead.
+for _q in "$SCRIPT_DIR"/*.container; do
+  [ -r "$_q" ] || fail "cannot read $SCRIPT_DIR/*.container — if running as mcp from a hermes-owned checkout, stage first: cp -r <repo>/deploy /tmp/deploy-staged && cd /tmp/deploy-staged && bash update.sh"
+done
 
 # ------------------------------------------------- pull + recreate-if-changed
 restarted=()

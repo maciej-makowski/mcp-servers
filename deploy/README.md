@@ -33,6 +33,28 @@ Both servers read **and rewrite** the token file (refresh + atomic
 Notion keeps no token file — its integration secret arrives at runtime via
 `OPENAPI_MCP_HEADERS` in the env file.
 
+## Shared spool (/srv/mcp_files)
+
+The agent and the spool-participating containers share a tmpfs-backed
+exchange tree at `/srv/mcp_files` (mounted `uid=mcp,gid=mcpfiles,mode=2770`):
+
+| participant | since | notes |
+|---|---|---|
+| `mcp-outlook` | Oct 31 | first participant; e2e round-trip verified both directions |
+| `mcp-proton`  | Nov 4  | `proton_drive` upload/download verified e2e Nov 5 (registry flip over MCP) |
+| `mcp-google`  | Nov 4  | mount live; `drive_upload` verified e2e Nov 5 (spool probe → Drive file → drive_search hit) |
+| `mcp-notion`  | —     | deliberately not mounted (no upload tools; artifacts live on Drive) |
+
+Subdirs `send/` and `receive/` are `2771 hermes:mcpfiles`: the agent writes
+as owner, containers write via the group. **The spool is tmpfs and therefore
+volatile** — `/etc/tmpfiles.d/mcp-files.conf` recreates the subdirs at every
+boot (d-type, `2771 hermes:mcpfiles`); without it a reboot wipes them and
+breaks every spool bind at statfs (agent sandbox spawns included, live-verified
+Nov 5). Agent-side recipe: stage a file into `send/` (mode 644), then the
+container's upload tool reads it in-container. Downloads land in `receive/`
+owned by `mcp`; single-file proton downloads are relaxed to `0644` by the
+wrapper so the agent can read them back.
+
 ## Audit logs
 
 `google_mcp/audit.py` and `outlook_mcp/audit.py` default to
@@ -117,28 +139,44 @@ not-found — a re-run actually recreates on the new images instead of reusing
 old containers) → starts the units → verifies each port (initialize POST with
 the correct bearer → 200; wrong bearer → 401).
 
-## Update (run as the `mcp` user)
+## Update (run as the `mcp` user, from a staged copy)
+
+The `mcp` user cannot traverse `/home/hermes`, so a checkout living there is
+invisible to this script — the run dies on the first `podman` call with
+`cannot chdir` (live-verified Nov 5). Stage first and run from the stage:
 
 ```bash
-# mcp cannot traverse /home/hermes — stage the tree to /tmp first (verified
-# live 2026-11-02; /tmp dirs are world-readable under the default umask):
-rm -rf /tmp/mcp-servers-deploy && cp -R ~/mcp-servers /tmp/mcp-servers-deploy
-sudo -u mcp /tmp/mcp-servers-deploy/deploy/update.sh
-# Staging dirs can be rm -rf'd afterwards. Quadlet files under
-# ~/.config/containers/systemd/ must stay owned by mcp — a root-owned quadlet
-# makes update.sh-as-mcp fail at the install step ("cp: cannot create regular
-# file ... Permission denied"); fix with
-#   sudo chown mcp:mcp /home/mcp/.config/containers/systemd/*.container
+cd /path/to/mcp-servers && git pull
+rm -rf /tmp/deploy-staged && cp -r deploy /tmp/deploy-staged
+cd /tmp/deploy-staged
+sudo -u mcp -H env XDG_RUNTIME_DIR=/run/user/$(id -u mcp) \
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u mcp)/bus \
+  bash ./update.sh
 ```
+
+(`update.sh` fails loudly with this recipe if its quadlet files are unreadable
+from its own directory.)
 
 `update.sh` is the lightweight rolling update: for each quadlet it pulls the
 image, compares the freshly pulled image ID against the one the running
-container was started from (`podman container inspect -> .Image` vs
-`podman image inspect -> .Id`), and only if they differ installs the quadlet,
-`daemon-reload`s and `systemctl --user restart`s the unit (quadlet restart
-recreates the container on the new image). No-op recreations are skipped —
-servers don't blip when nothing changed. Each restarted unit is then verified
-with the same bearer 200/401 check as install.sh.
+container was started from, and only if they differ stops the unit, removes
+the container (`podman rm -f` — a bare restart does NOT pick up a new image
+or changed mounts, proven live Oct 27), and starts it again. No-op
+recreations are skipped — servers don't blip when nothing changed. Each
+restarted unit is then verified with the same bearer 200/401 check as
+install.sh.
+
+**A recreate copies the repo quadlet over the deployed one.** Keep the repo
+templates in sync with the deployed reality — a drifted template (e.g. one
+missing a spool mount that was added live) silently drops that mount on the
+next recreate. Templates were synced with the deployed state as of Nov 5
+(proton + google in PR #30, outlook in PR #31).
+
+**Quadlet files under `~/.config/containers/systemd/` must stay owned by
+`mcp`.** A root-owned deployed `.container` makes `update.sh`-as-mcp fail at
+the install step (`cp: cannot create regular file ... Permission denied`);
+fix with `sudo chown mcp:mcp /home/mcp/.config/containers/systemd/*.container`
+(live-verified 2026-11-02, when the outlook quadlet had been left root-owned).
 
 ## Verify (as `mcp`, any time)
 
