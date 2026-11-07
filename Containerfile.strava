@@ -1,0 +1,25 @@
+# Multi-arch (linux/amd64 + linux/arm64), base tag verified on ghcr.io/astral-sh/uv.
+# Context is the repo root: strava_mcp imports the shared bearer middleware from
+# _shared/mcp_auth (uv path dependency), so both trees are copied (google
+# Containerfile pattern); the CMD form follows the proton Containerfile.
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+COPY _shared/ /app/_shared/
+COPY strava/ /app/strava/
+
+WORKDIR /app/strava
+ENV UV_LINK_MODE=copy
+# No --frozen: locks are (re)generated at build time per the repo ruling.
+RUN uv sync
+
+ENV MCP_HOST=0.0.0.0
+ENV MCP_PORT=8016
+
+# keep-id compatibility (see Containerfile.google for the full note): the
+# runtime cache lives in the world-writable /tmp and uv must not touch the
+# baked .venv. ENV sits AFTER `RUN uv sync` so build-time cache behaviour is
+# unchanged.
+ENV UV_CACHE_DIR=/tmp/uv-cache
+
+# HTTP mode requires MCP_BEARER at runtime (fail closed).
+CMD ["uv", "run", "--no-sync", "python", "-m", "strava_mcp.server"]
