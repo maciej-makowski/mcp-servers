@@ -1,6 +1,6 @@
 # MCP gateway key rotation
 
-Procedures for rotating the loopback bearer keys of the four MCP servers
+Procedures for rotating the loopback bearer keys of the five MCP servers
 (`mcp` user, rootless podman quadlets). **No secret values belong in this
 repo** — values are generated and applied by Maciek (`[SECRET:...]`
 placeholders below). Keys are 32-byte hex: `openssl rand -hex 32`.
@@ -20,6 +20,7 @@ live in `~/.hermes/.env` as `<SERVER>_MCP_BEARER` (Maciek-edited).
 | google  | 8011 | same                                              | `MCP_BEARER`          | `GOOGLE_MCP_BEARER` |
 | outlook | 8012 | same                                              | `MCP_BEARER`          | `OUTLOOK_MCP_BEARER`|
 | notion  | 8013 | supergateway 4.2.1 (union of key sources)         | `SUPERGATEWAY_API_KEY`| `NOTION_MCP_BEARER` |
+| strava  | 8016 | `_shared/mcp_auth` (single-key, fail-closed)      | `MCP_BEARER`          | `STRAVA_MCP_BEARER` |
 
 supergateway key sources: `--apiKey` (argv — do **not** use), `--apiKeyFile`,
 `SUPERGATEWAY_API_KEY` (env), `SUPERGATEWAY_API_KEY_FILE` — accepted as a
@@ -45,13 +46,13 @@ old-200/new-200 check catches the contrary, so the procedure stays fail-safe:
 5. Deploy the new image (`deploy/update.sh`), remove `MCP_BEARER` from `notion.env` and the `--apiKey` flag from the quadlet, recreate
 6. Verify: old 401 / new 200 / wrong 401; `ps` shows no key material on any supergateway cmdline
 
-## Steady-state rotation (all four)
+## Steady-state rotation (all five)
 
-1. Maciek generates four values: `openssl rand -hex 32` ×4
+1. Maciek generates five values: `openssl rand -hex 32` ×5
 2. notion: replace the `SUPERGATEWAY_API_KEY=` value in `/home/mcp/env/notion.env` → recreate → update `NOTION_MCP_BEARER` in `~/.hermes/.env`
    - Zero-blip option (future): mount a key-file volume and use `SUPERGATEWAY_API_KEY_FILE` (old/new union during overlap)
-3. proton/google/outlook: replace `MCP_BEARER=` in the respective env file → recreate → update `<SERVER>_MCP_BEARER` in `~/.hermes/.env` (the middleware reads the key at startup — single-key, so the blip is bounded to the recreate window)
-4. Rotate all four in one window so the client `.env` flips stay coherent
+3. proton/google/outlook/strava: replace `MCP_BEARER=` in the respective env file → recreate → update `<SERVER>_MCP_BEARER` in `~/.hermes/.env` (the middleware reads the key at startup — single-key, so the blip is bounded to the recreate window)
+4. Rotate all five in one window so the client `.env` flips stay coherent
 
 ## Verification (after every rotation)
 
@@ -59,6 +60,26 @@ old-200/new-200 check catches the contrary, so the procedure stays fail-safe:
 - `ps`/`pgrep` shows no key material on any cmdline (supergateway or curl)
 - Cross-uid `/proc` spot-check from a non-mcp uid: environ + maps DENIED
 - Hermes end-to-end: one tool call per server from a Hermes session
+
+## Strava re-auth (strava only)
+
+The Strava OAuth token rotates server-side (idle refresh plus the 401
+retry in `strava_mcp/client.py`); bearer rotation never covers a revoked
+app. After the app is revoked in Strava settings, or a refresh fails with
+401, re-authorize (strava design section 3.3, steps 1 to 3):
+
+1. Run the authorize helper inside the running container:
+
+   sudo -u mcp env XDG_RUNTIME_DIR=/run/user/$(id -u mcp) \
+     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u mcp)/bus \
+     podman exec -i mcp-strava uv run --no-sync python -m strava_mcp.authorize
+
+2. Open the printed URL in the browser, authorize, and paste the code from
+   the address bar. The helper exchanges the code, rewrites
+   `%h/strava-token/token.json` atomically, and prints success without
+   echoing any token value.
+3. Confirm by name and mode only that the token file exists again, then
+   run one read through the server.
 
 ## Hygiene rules
 
