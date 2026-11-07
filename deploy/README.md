@@ -1,7 +1,7 @@
 # deploy/ — containerised MCP host on rpi5-0
 
 Operator runbook for the isolated MCP host: rootless podman (5.4.2) under the
-dedicated nologin user `mcp` on the arm64 Raspberry Pi 5 (`rpi5-0`). Four
+dedicated nologin user `mcp` on the arm64 Raspberry Pi 5 (`rpi5-0`). Five
 MCP servers run as user quadlets, each published on the host loopback only:
 
 | quadlet                 | image                                             | port  |
@@ -10,6 +10,7 @@ MCP servers run as user quadlets, each published on the host loopback only:
 | `mcp-google.container`  | `ghcr.io/maciej-makowski/mcp-google:latest`        | 8011  |
 | `mcp-outlook.container` | `ghcr.io/maciej-makowski/mcp-outlook:latest`       | 8012  |
 | `mcp-notion.container`  | `ghcr.io/maciej-makowski/mcp-notion:latest`        | 8013  |
+| `mcp-strava.container`  | `ghcr.io/maciej-makowski/mcp-strava:latest`        | 8016  |
 
 ## Why the token volumes look odd
 
@@ -59,8 +60,9 @@ wrappers chmod after download (parked).
 
 `google_mcp/audit.py` and `outlook_mcp/audit.py` default to
 `~/.hermes/mcp-logs/<server>/` but honour an `MCP_LOGS_DIR` env override.
-The google and outlook quadlets set `Environment=MCP_LOGS_DIR=/app/logs`, so
-their `~/mcp-logs/<server>:/app/logs` volume mounts receive the JSONL logs.
+The google, outlook and strava quadlets set `Environment=MCP_LOGS_DIR=/app/logs`,
+so their `~/mcp-logs/<server>:/app/logs` volume mounts receive the JSONL logs.
+(strava's copy of the same audit core lives in `strava/strava_mcp/audit.py`.)
 Without the override (native stdio runs), behavior is unchanged. The notion
 container has no audit logger (official npm server) — its `/app/logs` mount
 captures supergateway stdout only.
@@ -86,16 +88,21 @@ together. The dual-key overlap (zero downtime) holds for the one-time
 migration off the old image (old `--apiKey` value and new env key both
 live); on the clean image only the env var exists (no key-file volume is
 mounted), so a future rotation is a brief 401-blip swap between server
-recreate and client `.env` update. The full procedure for all four servers
+recreate and client `.env` update. The full procedure for all five servers
 (placeholders, verification matrix) lives in version control:
 [`deploy/KEY-ROTATION.md`](KEY-ROTATION.md).
 
 Secrets live only in `/home/mcp/env/*.env` (0600, owned by `mcp`):
 `google.env`, `outlook.env`, `proton.env` carry `MCP_BEARER` (native
 middleware); `notion.env` carries `SUPERGATEWAY_API_KEY` (gateway auth)
-(+ `MCP_HOST`/`MCP_PORT`; notion also `OPENAPI_MCP_HEADERS`). **No secret ever
-appears in this repo, in the quadlet files, in the install script, or in
-command output.**
+(+ `MCP_HOST`/`MCP_PORT`; notion also `OPENAPI_MCP_HEADERS`).
+`strava.env` carries `MCP_BEARER` (native middleware) plus the Strava OAuth
+app keys `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` (+ `MCP_HOST`/`MCP_PORT`);
+`deploy/strava.env.example` is the placeholder template Maciek copies, and
+the token and log directories (`/home/mcp/strava-token`,
+`/home/mcp/mcp-logs/strava`) are created idempotently by `install.sh`.
+**No secret ever appears in this repo, in the quadlet files, in the install
+script, or in command output.**
 
 ## One-time host steps — MUST be done by Maciek, NOT by the mcp user or the agent
 
@@ -132,7 +139,7 @@ install -o mcp -g mcp -m 700 /home/hermes/.hermes/bin/proton /home/mcp/bin/proto
 sudo -u mcp /path/to/mcp-servers/deploy/install.sh
 ```
 
-The script: pulls the 4 ghcr images → installs the 4 quadlets into
+The script: pulls the 5 ghcr images → installs the 5 quadlets into
 `/home/mcp/.config/containers/systemd/` → `systemctl --user daemon-reload` →
 stops + removes any pre-existing containers (`podman rm -f`, ignoring
 not-found — a re-run actually recreates on the new images instead of reusing
@@ -184,7 +191,7 @@ fix with `sudo chown mcp:mcp /home/mcp/.config/containers/systemd/*.container`
 systemctl --user --no-pager status mcp-google.service mcp-outlook.service mcp-notion.service
 journalctl --user -u mcp-google.service -n 50 --no-pager   # (ditto others)
 # loopback-only check: must show 127.0.0.1 bound, never 0.0.0.0/LAN
-ss -tlnp | grep -E '8010|8011|8012|8013'
+ss -tlnp | grep -E '8010|8011|8012|8013|8016'
 ```
 
 Re-auth runbooks (Google device-code re-auth, Outlook device-code re-auth,
