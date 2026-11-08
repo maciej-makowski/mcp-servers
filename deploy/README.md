@@ -1,7 +1,7 @@
 # deploy/ — containerised MCP host on rpi5-0
 
 Operator runbook for the isolated MCP host: rootless podman (5.4.2) under the
-dedicated nologin user `mcp` on the arm64 Raspberry Pi 5 (`rpi5-0`). Five
+dedicated nologin user `mcp` on the arm64 Raspberry Pi 5 (`rpi5-0`). Six
 MCP servers run as user quadlets, each published on the host loopback only:
 
 | quadlet                 | image                                             | port  |
@@ -11,6 +11,7 @@ MCP servers run as user quadlets, each published on the host loopback only:
 | `mcp-outlook.container` | `ghcr.io/maciej-makowski/mcp-outlook:latest`       | 8012  |
 | `mcp-notion.container`  | `ghcr.io/maciej-makowski/mcp-notion:latest`        | 8013  |
 | `mcp-strava.container`  | `ghcr.io/maciej-makowski/mcp-strava:latest`        | 8016  |
+| `mcp-garmin.container`  | `ghcr.io/maciej-makowski/mcp-garmin:latest`        | 8017  |
 
 ## Why the token volumes look odd
 
@@ -60,7 +61,7 @@ wrappers chmod after download (parked).
 
 `google_mcp/audit.py` and `outlook_mcp/audit.py` default to
 `~/.hermes/mcp-logs/<server>/` but honour an `MCP_LOGS_DIR` env override.
-The google, outlook and strava quadlets set `Environment=MCP_LOGS_DIR=/app/logs`,
+The google, outlook, strava and garmin quadlets set `Environment=MCP_LOGS_DIR=/app/logs`,
 so their `~/mcp-logs/<server>:/app/logs` volume mounts receive the JSONL logs.
 (strava's copy of the same audit core lives in `strava/strava_mcp/audit.py`.)
 Without the override (native stdio runs), behavior is unchanged. The notion
@@ -88,9 +89,54 @@ together. The dual-key overlap (zero downtime) holds for the one-time
 migration off the old image (old `--apiKey` value and new env key both
 live); on the clean image only the env var exists (no key-file volume is
 mounted), so a future rotation is a brief 401-blip swap between server
-recreate and client `.env` update. The full procedure for all five servers
+recreate and client `.env` update. The full procedure for all six servers
 (placeholders, verification matrix) lives in version control:
 [`deploy/KEY-ROTATION.md`](KEY-ROTATION.md).
+
+## Garmin Personal API (8017)
+
+`mcp-garmin` is the Garmin Connect read-only MCP server (garmin design Rev 8,
+option C): it reads the official Garmin Connect Personal API live on each
+tool call. No mirror, no nightly sync, no token store: the derived 24 h
+bearer token caches in-process, and a restart re-derives it from the key in
+one call. The quadlet mounts only the audit-log directory
+(`%h/mcp-logs/garmin`, JSONL, created idempotently by `install.sh`).
+
+Port note: `mcp-strava` publishes 8016 and its option-A server is live on
+8016 since Nov 8 2026, while the garmin design registry expected strava on
+8015. Garmin therefore moved to 8017 (Maciek's call, Nov 8 2026; design doc
+amended in a parallel hermes-designs PR): the quadlet, the env template,
+`install.sh`, the server default and the tests all carry 8017 now, with the
+host:container publish symmetric (`127.0.0.1:8017:8017`). Phase 4's
+pre-flight re-verifies that 8017 is free before `install.sh` runs.
+
+Registration (phase 4, Maciek-only; secrets never touch the agent):
+
+1. Create the Personal API key in Garmin Connect web, expiry 365 days.
+2. Fill `/home/mcp/env/garmin.env` from `deploy/garmin.env.example`:
+   `MCP_BEARER` (generated hex, `openssl rand -hex 32`) and `GARMIN_API_KEY`
+   (the key from step 1); `MCP_HOST`/`MCP_PORT` stay as templated.
+3. Add `GARMIN_MCP_BEARER` to `~/.hermes/.env`.
+4. Add the `mcp_servers` entry to `~/.hermes/config.yaml`:
+
+   ```yaml
+   garmin:
+     url: http://127.0.0.1:8017/mcp
+     headers:
+       Authorization: Bearer ${GARMIN_MCP_BEARER}
+     timeout: 120
+   ```
+
+5. Run `install.sh` as the `mcp` user (it creates `/home/mcp/mcp-logs/garmin`,
+   pulls the image, installs the quadlet, starts the unit and verifies both
+   bearer checks).
+6. Verify: wrong bearer 401, correct bearer initialize POST 200, then
+   smoke-test tools through Hermes.
+
+Attended steps: with live-read v1 there is no SSO login to attend. The only
+attended step is the 365-day key rotation ([KEY-ROTATION.md](KEY-ROTATION.md),
+garmin section). The full option-B re-login runbook applies only if the
+unofficial fallback path is ever adopted.
 
 Secrets live only in `/home/mcp/env/*.env` (0600, owned by `mcp`):
 `google.env`, `outlook.env`, `proton.env` carry `MCP_BEARER` (native
@@ -101,6 +147,11 @@ app keys `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` (+ `MCP_HOST`/`MCP_PORT`);
 `deploy/strava.env.example` is the placeholder template Maciek copies, and
 the token and log directories (`/home/mcp/strava-token`,
 `/home/mcp/mcp-logs/strava`) are created idempotently by `install.sh`.
+`garmin.env` carries `MCP_BEARER` (native middleware) plus `GARMIN_API_KEY`,
+the Garmin Connect Personal API key (+ `MCP_HOST`/`MCP_PORT`);
+`deploy/garmin.env.example` is the placeholder template, and
+`/home/mcp/mcp-logs/garmin` is created idempotently by `install.sh` (there is
+no token store: the 24 h bearer token caches in-process).
 **No secret ever appears in this repo, in the quadlet files, in the install
 script, or in command output.**
 
@@ -139,7 +190,7 @@ install -o mcp -g mcp -m 700 /home/hermes/.hermes/bin/proton /home/mcp/bin/proto
 sudo -u mcp /path/to/mcp-servers/deploy/install.sh
 ```
 
-The script: pulls the 5 ghcr images → installs the 5 quadlets into
+The script: pulls the 6 ghcr images → installs the 6 quadlets into
 `/home/mcp/.config/containers/systemd/` → `systemctl --user daemon-reload` →
 stops + removes any pre-existing containers (`podman rm -f`, ignoring
 not-found — a re-run actually recreates on the new images instead of reusing
@@ -191,7 +242,7 @@ fix with `sudo chown mcp:mcp /home/mcp/.config/containers/systemd/*.container`
 systemctl --user --no-pager status mcp-google.service mcp-outlook.service mcp-notion.service
 journalctl --user -u mcp-google.service -n 50 --no-pager   # (ditto others)
 # loopback-only check: must show 127.0.0.1 bound, never 0.0.0.0/LAN
-ss -tlnp | grep -E '8010|8011|8012|8013|8016'
+ss -tlnp | grep -E '8010|8011|8012|8013|8016|8017'
 ```
 
 Re-auth runbooks (Google device-code re-auth, Outlook device-code re-auth,

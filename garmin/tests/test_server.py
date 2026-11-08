@@ -92,22 +92,22 @@ def test_resolve_run_mode_stdio_default(monkeypatch):
 
 def test_resolve_run_mode_http_requires_bearer(monkeypatch):
     monkeypatch.delenv("MCP_BEARER", raising=False)
-    monkeypatch.setenv("MCP_PORT", "8016")
+    monkeypatch.setenv("MCP_PORT", "8017")
     import server
 
     with pytest.raises(RuntimeError):
         server._resolve_run_mode()
 
 
-def test_resolve_run_mode_port_8016(monkeypatch):
+def test_resolve_run_mode_port_8017(monkeypatch):
     monkeypatch.setenv("MCP_BEARER", "x")
-    monkeypatch.setenv("MCP_PORT", "8016")
+    monkeypatch.setenv("MCP_PORT", "8017")
     monkeypatch.delenv("MCP_HOST", raising=False)
     import server
 
-    assert server._resolve_run_mode() == ("http", "127.0.0.1", 8016)
+    assert server._resolve_run_mode() == ("http", "127.0.0.1", 8017)
     monkeypatch.setenv("MCP_HOST", "0.0.0.0")
-    assert server._resolve_run_mode() == ("http", "0.0.0.0", 8016)
+    assert server._resolve_run_mode() == ("http", "0.0.0.0", 8017)
     monkeypatch.setenv("MCP_PORT", "9999")
     assert server._resolve_run_mode() == ("http", "0.0.0.0", 9999)
 
@@ -115,7 +115,7 @@ def test_resolve_run_mode_port_8016(monkeypatch):
 def test_main_wires_bearer_middleware_and_uvicorn(monkeypatch):
     """The __main__ block wraps the app in require_bearer and serves host/port."""
     monkeypatch.setenv("MCP_BEARER", "x")
-    monkeypatch.setenv("MCP_PORT", "8016")
+    monkeypatch.setenv("MCP_PORT", "8017")
     monkeypatch.delenv("MCP_HOST", raising=False)
     if str(GARMIN_DIR) not in sys.path:
         sys.path.insert(0, str(GARMIN_DIR))
@@ -138,4 +138,4 @@ def test_main_wires_bearer_middleware_and_uvicorn(monkeypatch):
 
     runpy.run_path(str(GARMIN_DIR / "server.py"), run_name="__main__")
     assert "wrapped" in captured  # require_bearer wrapped the streamable app
-    assert captured["host"] == "127.0.0.1" and captured["port"] == 8016
+    assert captured["host"] == "127.0.0.1" and captured["port"] == 8017

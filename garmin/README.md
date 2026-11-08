@@ -6,7 +6,7 @@ Part of the `maciej-makowski/mcp-servers` monorepo. Design doc: `garmin-connect-
 
 ## What it does
 
-- Serves MCP over streamable HTTP at `/mcp` on port **8016**, published on host loopback only (in-container bind `0.0.0.0`, the quadlet publishes `127.0.0.1:8016`). Bearer-gated and fail closed: HTTP mode requires `MCP_BEARER`.
+- Serves MCP over streamable HTTP at `/mcp` on port **8017**, published on host loopback only (in-container bind `0.0.0.0`, the quadlet publishes `127.0.0.1:8017`). Bearer-gated and fail closed: HTTP mode requires `MCP_BEARER`.
 - Reads Garmin live on each uncached tool call. No SQLite mirror and no nightly sync (that shape is the deferred add-on if rate limits bite, design decision D5).
 - Takes date ranges on the daily-family tools: one call fetches up to a month. The server splits longer ranges into windows at the per-endpoint caps.
 - Keeps a small in-process TTL cache in front of repeat reads, with per-family exponential backoff on 429/403/5xx.
@@ -21,7 +21,7 @@ Two credentials, two directions. Both live in `/home/mcp/env/garmin.env` (0600, 
 |---|---|---|
 | `MCP_BEARER` | Hermes -> server | gate for every tool call |
 | `GARMIN_API_KEY` | server -> Garmin | exchanged for a 24h bearer token |
-| `MCP_HOST` / `MCP_PORT` | config | bind address (container sets `0.0.0.0`) / port (default 8016) |
+| `MCP_HOST` / `MCP_PORT` | config | bind address (container sets `0.0.0.0`) / port (default 8017) |
 | `MCP_LOGS_DIR` | config | audit log root |
 
 The key-to-token exchange and renewal are handled by the official client (`PersonalApiAuthenticator`): the key derives a 24h bearer token, cached 0600, re-derived automatically when under one hour of validity remains. No password, no SSO login, no refresh token exists on the box. Key expiry is chosen at creation (365 days here); rotation is an attended step in Garmin Connect web plus an env-file edit and a unit restart.
@@ -67,7 +67,7 @@ Run locally (stdio by default; HTTP only with a bearer set):
 
 ```sh
 uv run python server.py
-MCP_BEARER=x MCP_PORT=8016 uv run python server.py
+MCP_BEARER=x MCP_PORT=8017 uv run python server.py
 ```
 
 Deployment (quadlet, install.sh and update.sh wiring, key-rotation runbook) ships in the deploy PR; the house pattern is documented in `deploy/README.md`.
