@@ -8,8 +8,8 @@
 # — root acting for mcp is fine; podman is rootless either way).
 #
 # What it does:
-#   1. pulls the 5 multi-arch images from ghcr.io (google/outlook/notion for
-#      the quadlets, plus mcp-proton and mcp-strava);
+#   1. pulls the 6 multi-arch images from ghcr.io (google/outlook/notion for
+#      the quadlets, plus mcp-proton, mcp-strava and mcp-garmin);
 #   2. installs the .container files into ~/.config/containers/systemd/;
 #   3. systemd --user daemon-reload;
 #   4. stops + removes any pre-existing containers, then starts the units (a
@@ -33,7 +33,7 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
 fi
 
 GHCR=ghcr.io/maciej-makowski
-IMAGES=("$GHCR/mcp-google:latest" "$GHCR/mcp-outlook:latest" "$GHCR/mcp-notion:latest" "$GHCR/mcp-proton:latest" "$GHCR/mcp-strava:latest")
+IMAGES=("$GHCR/mcp-google:latest" "$GHCR/mcp-outlook:latest" "$GHCR/mcp-notion:latest" "$GHCR/mcp-proton:latest" "$GHCR/mcp-strava:latest" "$GHCR/mcp-garmin:latest")
 
 SERVICES=(
   "mcp-google:8011:%h/env/google.env"
@@ -41,6 +41,7 @@ SERVICES=(
   "mcp-proton:8010:%h/env/proton.env"
   "mcp-notion:8013:%h/env/notion.env"
   "mcp-strava:8016:%h/env/strava.env"
+  "mcp-garmin:8016:%h/env/garmin.env"
 )
 
 UNIT_DIR="$HOME/.config/containers/systemd"
@@ -65,8 +66,16 @@ fail() { printf '[install] FATAL: %s\n' "$*" >&2; exit 1; }
 install -d -o mcp -g mcp -m 700 "$HOME/strava-token" "$HOME/mcp-logs/strava" \
   || fail "creating $HOME/strava-token and $HOME/mcp-logs/strava"
 
+# --------------------------------------------------- idempotent garmin dirs
+# Garmin has no token store: the official Personal API key lives in the env
+# file and the derived 24 h bearer token caches in-process (garmin design
+# section 5), so only the audit-log directory is needed. Same mcp-owned
+# pattern as above; `install -d` is idempotent.
+install -d -o mcp -g mcp -m 700 "$HOME/mcp-logs/garmin" \
+  || fail "creating $HOME/mcp-logs/garmin"
+
 # ---------------------------------------------------------------- pull images
-log "pulling 5 images from ghcr (multi-arch, arm64 resolved)..."
+log "pulling 6 images from ghcr (multi-arch, arm64 resolved)..."
 for img in "${IMAGES[@]}"; do
   podman pull "$img" || fail "podman pull $img"
   log "  pulled $img"
