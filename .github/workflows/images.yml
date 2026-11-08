@@ -34,6 +34,9 @@ jobs:
           - name: strava
             dir: strava
             pytest_cmd: uv run --extra dev pytest
+          - name: garmin
+            dir: garmin
+            pytest_cmd: uv run pytest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -49,6 +52,7 @@ jobs:
       notion: ${{ steps.filter.outputs.notion }}
       proton: ${{ steps.filter.outputs.proton }}
       strava: ${{ steps.filter.outputs.strava }}
+      garmin: ${{ steps.filter.outputs.garmin }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -76,6 +80,11 @@ jobs:
               - '_shared/**'
               - 'Containerfile.strava'
               - '.github/workflows/images.yml'
+            garmin:
+              - 'garmin/**'
+              - '_shared/**'
+              - 'Containerfile.garmin'
+              - '.github/workflows/images.yml'
 
   build:
     needs: [tests, changes]
@@ -100,6 +109,9 @@ jobs:
             context: proton
           - name: strava
             dockerfile: Containerfile.strava
+            context: .
+          - name: garmin
+            dockerfile: Containerfile.garmin
             context: .
     steps:
       - name: Skip if no relevant changes

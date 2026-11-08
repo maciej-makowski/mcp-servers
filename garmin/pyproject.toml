@@ -1,0 +1,21 @@
+[project]
+name = "garmin-mcp-server"
+version = "0.1.0"
+description = "FastMCP HTTP server over the official Garmin Connect Personal API (live reads, no mirror in v1)"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.2,<2",
+    "garmin-connect-personal-api-python>=1.0,<2",
+    "mcp-auth",
+]
+
+[tool.uv.sources]
+mcp-auth = { path = "../_shared/mcp_auth", editable = true }
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
