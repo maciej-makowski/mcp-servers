@@ -41,7 +41,7 @@ SERVICES=(
   "mcp-proton:8010:%h/env/proton.env"
   "mcp-notion:8013:%h/env/notion.env"
   "mcp-strava:8016:%h/env/strava.env"
-  "mcp-garmin:8016:%h/env/garmin.env"
+  "mcp-garmin:8017:%h/env/garmin.env"
 )
 
 UNIT_DIR="$HOME/.config/containers/systemd"

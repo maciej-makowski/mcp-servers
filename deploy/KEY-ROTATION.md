@@ -21,7 +21,7 @@ live in `~/.hermes/.env` as `<SERVER>_MCP_BEARER` (Maciek-edited).
 | outlook | 8012 | same                                              | `MCP_BEARER`          | `OUTLOOK_MCP_BEARER`|
 | notion  | 8013 | supergateway 4.2.1 (union of key sources)         | `SUPERGATEWAY_API_KEY`| `NOTION_MCP_BEARER` |
 | strava  | 8016 | `_shared/mcp_auth` (single-key, fail-closed)      | `MCP_BEARER`          | `STRAVA_MCP_BEARER` |
-| garmin  | 8016 | `_shared/mcp_auth` (single-key, fail-closed)      | `MCP_BEARER`          | `GARMIN_MCP_BEARER` |
+| garmin  | 8017 | `_shared/mcp_auth` (single-key, fail-closed)      | `MCP_BEARER`          | `GARMIN_MCP_BEARER` |
 
 supergateway key sources: `--apiKey` (argv — do **not** use), `--apiKeyFile`,
 `SUPERGATEWAY_API_KEY` (env), `SUPERGATEWAY_API_KEY_FILE` — accepted as a

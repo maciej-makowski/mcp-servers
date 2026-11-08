@@ -1,5 +1,5 @@
 # User-mode quadlet for the `mcp` user: garmin-mcp HTTP server (garmin design
-# section 5, option C, port 8016). Image from the monorepo's images.yml
+# section 5, option C, port 8017). Image from the monorepo's images.yml
 # workflow (Containerfile.garmin, multi-arch).
 #
 # Bearer auth is enforced by the shared _shared/mcp_auth.require_bearer
@@ -28,7 +28,7 @@ Wants=network-online.target
 Image=ghcr.io/maciej-makowski/mcp-garmin:latest
 ContainerName=mcp-garmin
 EnvironmentFile=%h/env/garmin.env
-PublishPort=127.0.0.1:8016:8016
+PublishPort=127.0.0.1:8017:8017
 Volume=%h/mcp-logs/garmin:/app/logs:Z
 Environment=MCP_LOGS_DIR=/app/logs
 

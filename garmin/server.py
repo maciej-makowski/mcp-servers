@@ -21,7 +21,7 @@ from mcp.server.fastmcp import FastMCP
 
 from garmin_mcp import audit, tools
 
-DEFAULT_HTTP_PORT = 8016
+DEFAULT_HTTP_PORT = 8017
 _S = "garmin"
 
 

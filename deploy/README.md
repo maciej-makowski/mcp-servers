@@ -11,7 +11,7 @@ MCP servers run as user quadlets, each published on the host loopback only:
 | `mcp-outlook.container` | `ghcr.io/maciej-makowski/mcp-outlook:latest`       | 8012  |
 | `mcp-notion.container`  | `ghcr.io/maciej-makowski/mcp-notion:latest`        | 8013  |
 | `mcp-strava.container`  | `ghcr.io/maciej-makowski/mcp-strava:latest`        | 8016  |
-| `mcp-garmin.container`  | `ghcr.io/maciej-makowski/mcp-garmin:latest`        | 8016  |
+| `mcp-garmin.container`  | `ghcr.io/maciej-makowski/mcp-garmin:latest`        | 8017  |
 
 ## Why the token volumes look odd
 
@@ -93,7 +93,7 @@ recreate and client `.env` update. The full procedure for all six servers
 (placeholders, verification matrix) lives in version control:
 [`deploy/KEY-ROTATION.md`](KEY-ROTATION.md).
 
-## Garmin Personal API (8016)
+## Garmin Personal API (8017)
 
 `mcp-garmin` is the Garmin Connect read-only MCP server (garmin design Rev 8,
 option C): it reads the official Garmin Connect Personal API live on each
@@ -102,11 +102,13 @@ bearer token caches in-process, and a restart re-derives it from the key in
 one call. The quadlet mounts only the audit-log directory
 (`%h/mcp-logs/garmin`, JSONL, created idempotently by `install.sh`).
 
-Port note: `mcp-strava` currently publishes 8016 in this repo (quadlet,
-`install.sh`, the table above and `KEY-ROTATION.md`), while the garmin
-design registry expected strava on 8015. Before running `install.sh` for
-garmin, resolve the port: move strava off 8016 or re-port garmin. Phase 4's
-pre-flight re-verifies that 8016 is free.
+Port note: `mcp-strava` publishes 8016 and its option-A server is live on
+8016 since Nov 8 2026, while the garmin design registry expected strava on
+8015. Garmin therefore moved to 8017 (Maciek's call, Nov 8 2026; design doc
+amended in a parallel hermes-designs PR): the quadlet, the env template,
+`install.sh`, the server default and the tests all carry 8017 now, with the
+host:container publish symmetric (`127.0.0.1:8017:8017`). Phase 4's
+pre-flight re-verifies that 8017 is free before `install.sh` runs.
 
 Registration (phase 4, Maciek-only; secrets never touch the agent):
 
@@ -119,7 +121,7 @@ Registration (phase 4, Maciek-only; secrets never touch the agent):
 
    ```yaml
    garmin:
-     url: http://127.0.0.1:8016/mcp
+     url: http://127.0.0.1:8017/mcp
      headers:
        Authorization: Bearer ${GARMIN_MCP_BEARER}
      timeout: 120
@@ -240,7 +242,7 @@ fix with `sudo chown mcp:mcp /home/mcp/.config/containers/systemd/*.container`
 systemctl --user --no-pager status mcp-google.service mcp-outlook.service mcp-notion.service
 journalctl --user -u mcp-google.service -n 50 --no-pager   # (ditto others)
 # loopback-only check: must show 127.0.0.1 bound, never 0.0.0.0/LAN
-ss -tlnp | grep -E '8010|8011|8012|8013|8016'
+ss -tlnp | grep -E '8010|8011|8012|8013|8016|8017'
 ```
 
 Re-auth runbooks (Google device-code re-auth, Outlook device-code re-auth,
