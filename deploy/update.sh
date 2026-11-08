@@ -45,6 +45,7 @@ SERVICES=(
   "mcp-proton:8010:proton.env"
   "mcp-notion:8013:notion.env"
   "mcp-strava:8016:strava.env"
+  "mcp-garmin:8017:garmin.env"
 )
 
 log() { printf '[update] %s\n' "$*"; }
