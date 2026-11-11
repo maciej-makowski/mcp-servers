@@ -7,6 +7,14 @@
 #   sudo -u mcp deploy/install.sh
 # — root acting for mcp is fine; podman is rootless either way).
 #
+# STAGING: run from an mcp-accessible cwd. sudo inherits the caller's cwd
+# and the mcp user cannot traverse /home/hermes, so a checkout living there
+# must be staged first (from the repo root):
+#   cp -r deploy /tmp/deploy-staged && cd /tmp/deploy-staged
+#   sudo -u mcp bash ./install.sh
+# (live-verified Nov 8 2026: podman pull died with 'cannot chdir' when the
+# script was fired straight from the clone).
+#
 # What it does:
 #   1. pulls the 6 multi-arch images from ghcr.io (google/outlook/notion for
 #      the quadlets, plus mcp-proton, mcp-strava and mcp-garmin);

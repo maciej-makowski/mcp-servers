@@ -115,7 +115,8 @@ Registration (phase 4, Maciek-only; secrets never touch the agent):
 1. Create the Personal API key in Garmin Connect web, expiry 365 days.
 2. Fill `/home/mcp/env/garmin.env` from `deploy/garmin.env.example`:
    `MCP_BEARER` (generated hex, `openssl rand -hex 32`) and `GARMIN_API_KEY`
-   (the key from step 1); `MCP_HOST`/`MCP_PORT` stay as templated.
+   (the key from step 1); `MCP_HOST`/`MCP_PORT` stay as templated. Values
+   go in bare, no quotes.
 3. Add `GARMIN_MCP_BEARER` to `~/.hermes/.env`.
 4. Add the `mcp_servers` entry to `~/.hermes/config.yaml`:
 
@@ -184,10 +185,19 @@ install -o mcp -g mcp -m 700 /home/hermes/.hermes/bin/proton /home/mcp/bin/proto
 (`linger` is already enabled for `mcp`; env templates already exist under
 `/home/mcp/env/`.)
 
-## Install + start (run as the `mcp` user)
+## Install + start (run as the `mcp` user, from a staged copy)
+
+The `mcp` user cannot traverse `/home/hermes`, so a checkout living there is
+invisible to this script: the run dies on the first `podman` call with
+`cannot chdir` (live-verified Nov 8 2026). Stage first and run from the stage:
 
 ```bash
-sudo -u mcp /path/to/mcp-servers/deploy/install.sh
+cd /path/to/mcp-servers && git pull
+rm -rf /tmp/deploy-staged && cp -r deploy /tmp/deploy-staged
+cd /tmp/deploy-staged
+sudo -u mcp -H env XDG_RUNTIME_DIR=/run/user/$(id -u mcp) \
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u mcp)/bus \
+  bash ./install.sh
 ```
 
 The script: pulls the 6 ghcr images → installs the 6 quadlets into
