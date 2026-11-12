@@ -50,13 +50,13 @@ def rec(monkeypatch, tmp_path):
 
 
 def tail_without_globals(argv: list[str]) -> list[str]:
-    """Strip the runner's --output json --no-input (and optional --dry-run) suffix."""
-    tail = argv[-1:]
-    argv = list(argv)
-    if tail == ["--dry-run"]:
-        argv = argv[:-1]
-    assert argv[-3:] == ["--output", "json", "--no-input"]
-    return argv[1:-3]  # drop the binary path
+    """Strip the runner's PREPENDED region — binary path, --output json
+    --no-input, and --dry-run for gated calls — and return the verb argv."""
+    assert argv[:4] == [str(runner.PROTON_BIN), "--output", "json", "--no-input"]
+    argv = list(argv)[4:]
+    if argv and argv[0] == "--dry-run":
+        argv = argv[1:]
+    return argv
 
 
 def proc_json(payload: dict):
@@ -253,10 +253,13 @@ def test_gated_confirm_true_real_run(rec, tmp_path, tool, action, params):
     assert r["dry_run"] is False
 
 
-# --- belt-and-braces: RuntimeError if runner drops --dry-run --------------------
+# --- dry-run argv check: RuntimeError if the runner drops --dry-run -------------
 
 
-def test_belt_and_braces_runtime_error_if_dry_run_dropped(rec, monkeypatch):
+def test_dry_run_argv_check_runtime_error_if_flag_dropped(rec, monkeypatch):
+    """The check asserts the runner's prepended region as a whole prefix
+    ([bin, --output, json, --no-input, --dry-run]); a runner that drops the
+    flag breaks the prefix and the call refuses."""
     def fake_run(args, **kw):
         # Simulate a runner that drops --dry-run from its recorded argv too.
         if "--dry-run" in args:
@@ -771,3 +774,370 @@ def test_events_list_non_int_limit_rejected(rec):
     r = tools.CALENDAR_TOOL.dispatch("events_list", {"limit": "50"})
     assert r["success"] is False and "limit" in r["error"]
     assert rec["argv"] == []
+
+
+# --- attachment actions (design §5 items 1-15; items 16-17 in test_mcp_tools) ---
+#
+# All hermetic: monkeypatched runner, no network, no real Proton calls.
+# Downloads run real directory mechanics against tmp paths; the default spool
+# destination is repointed at a tmp dir so tests never touch
+# /srv/mcp_files/receive.
+
+
+@pytest.fixture
+def tmp_dest(monkeypatch, tmp_path):
+    """Point the attachment download default dest at a tmp dir."""
+    dest = tmp_path / "receive"
+    monkeypatch.setattr(tools, "DEFAULT_ATTACHMENT_DEST_DIR", str(dest))
+    return dest
+
+
+def _downloaded_payload(count: int = 0, **extra) -> dict:
+    """The CLI's download-all JSON result (fact 6: kind, count, no name)."""
+    payload = {"action": "downloaded", "count": count, "dry_run": False, "kind": "attachment"}
+    payload.update(extra)
+    return payload
+
+
+def _download_sweep_cases() -> list[tuple[str, dict]]:
+    """Every attachments_download / conversation_attachments_download argv
+    variant exercised by this module's download tests (items 3-6, 9, 11)."""
+    return [
+        ("attachments_download", {"id": "abc123"}),
+        ("attachments_download", {"id": "abc123", "attachment": "att-1", "force": True, "include_inline": True}),
+        ("conversation_attachments_download", {"id": "conv9", "force": True}),
+        ("attachments_download", {"id": "-abc123"}),
+        ("attachments_download", {"id": "--abc123"}),
+        ("attachments_download", {"id": "abc123", "attachment": "-weird"}),
+        ("attachments_download", {"id": "abc123", "force": True}),
+        ("attachments_download", {"id": "abc123", "include_inline": True}),
+    ]
+
+
+def test_attachments_list_argv_id_only(rec):
+    """Item 1: exact argv — no flags, `--`, then the positional."""
+    rec["proc"] = proc_json({"attachments": [], "count": 0})
+    tools.MAIL_TOOL.dispatch("attachments_list", {"id": "abc123"})
+    assert tail_without_globals(rec["argv"]) == [
+        "mail", "messages", "attachments", "list", "--", "abc123",
+    ]
+
+
+def test_attachments_list_argv_include_inline_flag(rec):
+    """Item 2: the flag after `list`, then the `--`, then the positional."""
+    rec["proc"] = proc_json({"attachments": [], "count": 0})
+    tools.MAIL_TOOL.dispatch("attachments_list", {"id": "abc123", "include_inline": True})
+    args = tail_without_globals(rec["argv"])
+    assert args[:5] == ["mail", "messages", "attachments", "list", "--include-inline"]
+    assert args[5:] == ["--", "abc123"]
+
+
+def test_attachments_download_argv_flags_first(rec, tmp_dest):
+    """Item 3: flags-first argv — --dest-dir present, then `--`, then the
+    positional."""
+    rec["proc"] = proc_json(_downloaded_payload())
+    tools.MAIL_TOOL.dispatch("attachments_download", {"id": "abc123"})
+    args = tail_without_globals(rec["argv"])
+    assert args == [
+        "mail", "messages", "attachments", "download",
+        "--dest-dir", str(tmp_dest), "--", "abc123",
+    ]
+
+
+def test_attachments_download_argv_attachment_and_force(rec, tmp_dest):
+    """Items 4 + 11 (asserted here per the design): --force present,
+    --include-inline absent even though the parameter was passed, both
+    positionals after the `--` in order."""
+    rec["proc"] = proc_json(_downloaded_payload(1, name="a.pdf"))
+    tools.MAIL_TOOL.dispatch(
+        "attachments_download",
+        {"id": "abc123", "attachment": "att-1", "force": True, "include_inline": True},
+    )
+    args = tail_without_globals(rec["argv"])
+    assert args == [
+        "mail", "messages", "attachments", "download",
+        "--dest-dir", str(tmp_dest), "--force", "--", "abc123", "att-1",
+    ]
+    assert "--include-inline" not in args
+
+
+def test_conversation_attachments_download_argv_shape(rec, tmp_dest):
+    """Item 5: `mail conversations attachments ...` argv, same flag positions
+    and `--` placement."""
+    rec["proc"] = proc_json(_downloaded_payload())
+    tools.MAIL_TOOL.dispatch(
+        "conversation_attachments_download", {"id": "conv9", "force": True}
+    )
+    args = tail_without_globals(rec["argv"])
+    assert args == [
+        "mail", "conversations", "attachments", "download",
+        "--dest-dir", str(tmp_dest), "--force", "--", "conv9",
+    ]
+
+
+@pytest.mark.parametrize(
+    "rid, att",
+    [
+        ("abc123", "-weird"),  # leading-dash attachment name
+        ("-abc123", None),  # single-dash id
+        ("--abc123", None),  # double-dash id
+    ],
+)
+def test_attachment_refs_after_separator_land_as_positionals(rec, tmp_dest, rid, att):
+    """Item 6: after the `--` every ref shape lands as a literal positional
+    element; the region before the `--` stays exactly the wrapper's own flags
+    (the CLI's shape-guessing never runs on these calls)."""
+    rec["proc"] = proc_json(_downloaded_payload())
+    params = {"id": rid}
+    if att is not None:
+        params["attachment"] = att
+    tools.MAIL_TOOL.dispatch("attachments_download", params)
+    args = tail_without_globals(rec["argv"])
+    sep = args.index("--")
+    assert args[:sep] == [
+        "mail", "messages", "attachments", "download", "--dest-dir", str(tmp_dest),
+    ]
+    assert args[sep] == "--"
+    assert args[sep + 1:] == ([rid, att] if att else [rid])
+
+
+def test_attachments_download_default_dest_dir_emits_module_constant(rec, monkeypatch, tmp_path):
+    """Item 7: omitting dest_dir emits the module constant's value in argv;
+    the constant itself pins /srv/mcp_files/receive."""
+    assert tools.DEFAULT_ATTACHMENT_DEST_DIR == "/srv/mcp_files/receive"  # the pin
+    dest = tmp_path / "receive"
+    monkeypatch.setattr(tools, "DEFAULT_ATTACHMENT_DEST_DIR", str(dest))  # hermetic stand-in
+    rec["proc"] = proc_json(_downloaded_payload())
+    tools.MAIL_TOOL.dispatch("attachments_download", {"id": "abc123"})
+    args = tail_without_globals(rec["argv"])
+    assert args[args.index("--dest-dir") + 1] == str(dest)  # the constant's value in argv
+
+
+def test_attachments_download_dir_diff_reports_new_files_and_chmods(rec, monkeypatch, tmp_path):
+    """Item 8: pre-seed dest_dir with an unrelated file and a colliding name;
+    the fake CLI writes the "downloaded" files (collision renamed, as the CLI
+    does). The diff reports exactly the new files, chmod lands 0644 on each,
+    and .proton-cli-* residue is excluded from both the report and the chmod."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    unrelated = dest / "notes.txt"
+    unrelated.write_bytes(b"unrelated")
+    unrelated.chmod(0o600)
+    collision = dest / "invoice.pdf"
+    collision.write_bytes(b"old-bytes")
+    collision.chmod(0o600)
+
+    def fake_cli(args, input=None, capture_output=True, text=True, timeout=None, **kw):
+        rec["argv"] = list(args)
+        renamed = dest / "invoice (2).pdf"  # the CLI renames the collision
+        renamed.write_bytes(b"new-invoice-bytes")
+        sig = dest / "sig.png"
+        sig.write_bytes(b"sig-bytes")
+        residue = dest / ".proton-cli-77.tmp"  # a killed CLI skips its cleanup
+        residue.write_bytes(b"partial-temp")
+        residue.chmod(0o600)
+        return proc_json(_downloaded_payload(2))
+
+    monkeypatch.setattr(subprocess, "run", fake_cli)
+    r = tools.MAIL_TOOL.dispatch("attachments_download", {"id": "abc123", "dest_dir": str(dest)})
+    assert r["success"] is True
+    assert [f["name"] for f in r["files"]] == ["invoice (2).pdf", "sig.png"]
+    assert r["files"][0] == {"name": "invoice (2).pdf", "size": len(b"new-invoice-bytes")}
+    assert r["files"][1]["size"] == len(b"sig-bytes")
+    assert r["count"] == 2
+    assert r["dest_dir"] == str(dest)
+    assert "note" not in r
+    assert stat.S_IMODE((dest / "invoice (2).pdf").stat().st_mode) == 0o644
+    assert stat.S_IMODE((dest / "sig.png").stat().st_mode) == 0o644
+    # Untouched files stay untouched: not reported, not chmod'd.
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o600
+    assert unrelated.read_bytes() == b"unrelated"
+    assert stat.S_IMODE(collision.stat().st_mode) == 0o600
+    assert collision.read_bytes() == b"old-bytes"
+    assert all(f["name"] != ".proton-cli-77.tmp" for f in r["files"])
+    assert stat.S_IMODE((dest / ".proton-cli-77.tmp").stat().st_mode) == 0o600
+
+
+def test_attachments_download_force_overwrite_lists_changed_file(rec, monkeypatch, tmp_path):
+    """Item 9: a --force overwrite of a pre-existing target reports as
+    changed (not new) and is still listed."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    target = dest / "invoice.pdf"
+    target.write_bytes(b"old-bytes")
+    target.chmod(0o600)
+
+    def fake_cli(args, input=None, capture_output=True, text=True, timeout=None, **kw):
+        rec["argv"] = list(args)
+        target.write_bytes(b"brand-new-bytes")  # --force overwrite in place
+        return proc_json(_downloaded_payload(1))
+
+    monkeypatch.setattr(subprocess, "run", fake_cli)
+    r = tools.MAIL_TOOL.dispatch(
+        "attachments_download", {"id": "abc123", "dest_dir": str(dest), "force": True}
+    )
+    assert r["success"] is True
+    assert r["files"] == [
+        {"name": "invoice.pdf", "size": len(b"brand-new-bytes"), "changed": True}
+    ]
+    assert r["count"] == 1
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert "--force" in tail_without_globals(rec["argv"])
+
+
+def test_attachments_download_partial_failure_files_kept_and_count_note(rec, monkeypatch, tmp_path):
+    """Item 10: a CLI failure mid-loop keeps success:false with the partial
+    file set (no applied key on reads); a success run whose diff count
+    disagrees with data.count sets the direction-neutral note in both
+    directions (inflated and deflated)."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+
+    # Partial failure: one file written before the CLI aborts.
+    def failing_cli(args, input=None, capture_output=True, text=True, timeout=None, **kw):
+        rec["argv"] = list(args)
+        (dest / "first.pdf").write_bytes(b"part-one")
+        return make_proc(stdout="", returncode=5)
+
+    monkeypatch.setattr(subprocess, "run", failing_cli)
+    r = tools.MAIL_TOOL.dispatch("attachments_download", {"id": "abc123", "dest_dir": str(dest)})
+    assert r["success"] is False
+    assert r["exit_code"] == 5
+    assert [f["name"] for f in r["files"]] == ["first.pdf"]
+    assert r["count"] == 1
+    assert stat.S_IMODE((dest / "first.pdf").stat().st_mode) == 0o644
+    assert "applied" not in r
+    assert "note" not in r  # the note is a success-run signal
+
+    # Inflated: a concurrent spool writer adds a file between run and diff.
+    def inflating_cli(args, input=None, capture_output=True, text=True, timeout=None, **kw):
+        rec["argv"] = list(args)
+        (dest / "only.pdf").write_bytes(b"mine")
+        (dest / "stray-by-other-container.txt").write_bytes(b"not mine")
+        return proc_json(_downloaded_payload(1))
+
+    monkeypatch.setattr(subprocess, "run", inflating_cli)
+    r = tools.MAIL_TOOL.dispatch("attachments_download", {"id": "abc123", "dest_dir": str(dest)})
+    assert r["success"] is True
+    assert r["count"] == 2 and r["data"]["count"] == 1
+    assert r["note"] == "the number of files differs from the CLI's reported count"
+
+    # Deflated: the CLI planned two, one vanished between write and diff.
+    def deflating_cli(args, input=None, capture_output=True, text=True, timeout=None, **kw):
+        rec["argv"] = list(args)
+        (dest / "only2.pdf").write_bytes(b"mine")
+        (dest / "stray-by-other-container.txt").unlink()
+        return proc_json(_downloaded_payload(2))
+
+    monkeypatch.setattr(subprocess, "run", deflating_cli)
+    r = tools.MAIL_TOOL.dispatch("attachments_download", {"id": "abc123", "dest_dir": str(dest)})
+    assert r["success"] is True
+    assert r["count"] == 1 and r["data"]["count"] == 2
+    assert "note" in r
+
+
+def test_attachments_download_include_inline_omitted_when_attachment_set(rec, tmp_dest):
+    """Item 11: with `attachment` given, --include-inline is omitted regardless
+    of the parameter; without it, a truthy include_inline emits the flag."""
+    rec["proc"] = proc_json(_downloaded_payload(1, name="a.pdf"))
+    for include in (True, False):
+        tools.MAIL_TOOL.dispatch(
+            "attachments_download",
+            {"id": "abc123", "attachment": "att-9", "include_inline": include},
+        )
+        assert "--include-inline" not in tail_without_globals(rec["argv"])
+    tools.MAIL_TOOL.dispatch("attachments_download", {"id": "abc123", "include_inline": True})
+    assert "--include-inline" in tail_without_globals(rec["argv"])
+
+
+def test_run_timeout_seam_forwards_to_runner(rec, tmp_dest, monkeypatch):
+    """Item 12: _run forwards its timeout kwarg to runner.run with the 60 s
+    default intact for existing callers; both download actions pass
+    timeout=300 through _run and the list actions use the default."""
+    seen: list = []
+    real_run = runner.run
+
+    def spy_run(args, stdin_text=None, timeout=None, dry_run=False):
+        seen.append(timeout)
+        if timeout is None:
+            return real_run(args, stdin_text=stdin_text, dry_run=dry_run)
+        return real_run(args, stdin_text=stdin_text, dry_run=dry_run, timeout=timeout)
+
+    monkeypatch.setattr(runner, "run", spy_run)
+
+    # Direct forwarding through _run.
+    tools.MAIL_TOOL._run(["probe"], timeout=300)
+    assert seen == [300]
+
+    # Downloads pass 300 (both families), visible at subprocess level too.
+    rec["timeout"] = None
+    tools.MAIL_TOOL.dispatch("attachments_download", {"id": "abc123"})
+    assert seen[-1] == 300
+    assert rec["timeout"] == 300
+    tools.MAIL_TOOL.dispatch("conversation_attachments_download", {"id": "conv9"})
+    assert seen[-1] == 300
+
+    # Lists and existing callers keep the runner's own 60 s default.
+    seen.clear()
+    rec["timeout"] = None
+    tools.MAIL_TOOL.dispatch("attachments_list", {"id": "abc123"})
+    tools.MAIL_TOOL.dispatch("conversation_attachments_list", {"id": "conv9"})
+    tools.MAIL_TOOL.dispatch("status", {})
+    assert seen == [None, None, None]
+    assert rec["timeout"] == 60
+
+
+@pytest.mark.parametrize(
+    "case, params, needle",
+    [
+        ("missing-id", {}, "id"),
+        ("attachment-as-list", {"id": "abc123", "attachment": ["a.pdf"]}, "attachment"),
+        ("makedirs-failure", None, "dest_dir"),
+    ],
+)
+def test_attachments_download_validation_errors(rec, tmp_path, case, params, needle):
+    """Item 13: structured validation errors before any argv build — a
+    missing id; attachment given as a list (a stringified list would smuggle
+    itself into one argv element); an un-creatable dest_dir naming the path.
+    The CLI never runs."""
+    if case == "makedirs-failure":
+        blocked = tmp_path / "blocked"
+        blocked.write_text("x")  # exists as a file: makedirs refuses
+        params = {"id": "abc123", "dest_dir": str(blocked)}
+    r = tools.MAIL_TOOL.dispatch("attachments_download", params)
+    assert r["success"] is False
+    assert r["validation"] is True
+    assert needle in r["error"]
+    if case == "makedirs-failure":
+        assert str(blocked) in r["error"]
+    assert r["exit_code"] is None
+    assert r["auth_required"] is False
+    assert rec["argv"] == []
+
+
+def test_attachments_download_never_dry_run_sweep(rec, tmp_dest):
+    """Item 14: downloads never receive --dry-run in any argv (sweep over
+    every download case in this module)."""
+    for action, params in _download_sweep_cases():
+        rec["argv"] = []
+        rec["proc"] = proc_json(_downloaded_payload())
+        r = tools.MAIL_TOOL.dispatch(action, params)
+        assert r["success"] is True, (action, params, r)
+        assert rec["argv"], (action, params)
+        assert "--dry-run" not in rec["argv"], (action, params)
+        assert "--dry-run" not in (runner.LAST_ARGV or [])
+
+
+def test_attachments_download_dest_dir_sweep(rec, tmp_dest):
+    """Item 15: every download argv carries --dest-dir (explicit or the module
+    default), so the CLI's write-into-CWD behavior is unreachable; the bare
+    single-file --dest variant is never emitted (D5)."""
+    for action, params in _download_sweep_cases():
+        rec["argv"] = []
+        rec["proc"] = proc_json(_downloaded_payload())
+        tools.MAIL_TOOL.dispatch(action, params)
+        assert "--dest-dir" in rec["argv"], (action, params)
+        i = rec["argv"].index("--dest-dir")
+        expected = params.get("dest_dir") or str(tmp_dest)
+        assert rec["argv"][i + 1] == expected
+        assert "--dest" not in tail_without_globals(rec["argv"])

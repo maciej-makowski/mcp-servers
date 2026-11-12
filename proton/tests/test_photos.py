@@ -46,13 +46,13 @@ def rec(monkeypatch, tmp_path):
 
 
 def tail_without_globals(argv: list[str]) -> list[str]:
-    """Strip the runner's --output json --no-input (and optional --dry-run) suffix."""
-    tail = argv[-1:]
-    argv = list(argv)
-    if tail == ["--dry-run"]:
-        argv = argv[:-1]
-    assert argv[-3:] == ["--output", "json", "--no-input"]
-    return argv[1:-3]
+    """Strip the runner's PREPENDED region — binary path, --output json
+    --no-input, and --dry-run for gated calls — and return the verb argv."""
+    assert argv[:4] == [str(runner.PROTON_BIN), "--output", "json", "--no-input"]
+    argv = list(argv)[4:]
+    if argv and argv[0] == "--dry-run":
+        argv = argv[1:]
+    return argv
 
 
 # --- reads: argv shapes -------------------------------------------------------

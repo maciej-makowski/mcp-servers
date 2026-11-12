@@ -9,6 +9,7 @@ import pytest
 
 from proton_mcp import runner
 from proton_mcp import server as srv
+from proton_mcp import tools
 
 EXPECTED_TOOLS = {"proton_mail", "proton_calendar", "proton_drive", "proton_photos"}
 
@@ -21,6 +22,9 @@ def test_four_tools_registered():
 def test_action_enums_mirror_tool_layer():
     mail = srv.INPUT_SCHEMAS["proton_mail"]["properties"]["action"]["enum"]
     assert set(mail) == {"status", "list", "search", "get",
+                         "attachments_list", "attachments_download",
+                         "conversation_attachments_list",
+                         "conversation_attachments_download",
                          "send", "move", "label", "unlabel", "mark", "trash"}
     cal = srv.INPUT_SCHEMAS["proton_calendar"]["properties"]["action"]["enum"]
     assert set(cal) == {"calendars", "events_list", "events_get",
@@ -142,7 +146,7 @@ def test_list_tools_and_call_tool_via_lowlevel_server(rec):
     assert names == ["proton_mail", "proton_calendar", "proton_drive", "proton_photos"]
     payload = json.loads(called.content[0].text)
     assert payload["success"] is True
-    tail = rec["argv"][1:]  # drop binary path
+    tail = rec["argv"][4:]  # drop binary path + prepended global flags
     assert tail[:3] == ["calendar", "events", "list"]
     assert "--calendar" in tail and "Work" in tail
 
@@ -186,3 +190,91 @@ def test_confirm_params_false_overrides_top_level_true(rec):
     )
     assert r["dry_run"] is True
     assert "--dry-run" in rec["argv"]
+
+
+# --- attachment actions: schema + runner template (design §5 items 16-17) -------
+
+
+def test_proton_mail_schema_carries_attachment_actions_and_params():
+    """Item 16: the enum carries all four new actions; the params properties
+    carry the four new keys with the documented types; no confirm requirement
+    is attached to read actions."""
+    mail = srv.INPUT_SCHEMAS["proton_mail"]["properties"]["action"]["enum"]
+    for action in (
+        "attachments_list",
+        "attachments_download",
+        "conversation_attachments_list",
+        "conversation_attachments_download",
+    ):
+        assert action in mail
+    props = srv.INPUT_SCHEMAS["proton_mail"]["properties"]["params"]["properties"]
+    for key, typ in (
+        ("attachment", "string"),
+        ("dest_dir", "string"),
+        ("force", "boolean"),
+        ("include_inline", "boolean"),
+    ):
+        assert props[key]["type"] == typ, key
+    assert props["id"]["description"] == (
+        "Message or conversation reference (get and attachment actions)"
+    )
+    spec = srv.TOOL_SPECS["proton_mail"]
+    gated = set(spec["gated"])
+    for action in spec["reads"]:
+        assert action not in gated  # reads are never confirm-gated
+    schema = srv.INPUT_SCHEMAS["proton_mail"]
+    assert schema["properties"]["confirm"]["default"] is False
+    assert schema["required"] == ["action"]
+    assert "Attachment list/download reads" in spec["description"]
+
+
+def test_runner_template_prepends_global_flags(rec, tmp_path, monkeypatch):
+    """Item 17: every argv starts [BIN, --output, json, --no-input] before the
+    verb tokens (--dry-run immediately after, gated calls only), and the
+    dry-run argv check asserts that prepended region as a whole prefix.
+    Shape regression: a single-dash-id get now produces prepended flags before
+    the positional — under the old trailing-flags template the CLI's
+    preprocessArgs demoted those flags to positionals once a dash-id was
+    marked (an argument-count refusal for ~1 in 64 ids)."""
+    dest = tmp_path / "receive-template"
+    monkeypatch.setattr(tools, "DEFAULT_ATTACHMENT_DEST_DIR", str(dest))
+    cases = [
+        ("status", {}, False),
+        ("list", {}, False),
+        ("search", {"query": "x"}, False),
+        ("get", {"id": "abc"}, False),
+        ("attachments_list", {"id": "abc"}, False),
+        ("attachments_download", {"id": "abc"}, False),
+        ("send", {"to": "x@y.z", "subject": "s", "body": "b"}, True),
+        ("trash", {"refs": ["1"]}, True),
+    ]
+    for action, params, gated in cases:
+        rec["argv"] = []
+        tools.MAIL_TOOL.dispatch(action, params)  # confirm omitted: gated -> dry-run default
+        prefix = [str(runner.PROTON_BIN), "--output", "json", "--no-input"]
+        if gated:
+            prefix += ["--dry-run"]
+        assert rec["argv"][: len(prefix)] == prefix, (action, rec["argv"])
+        verb_tokens = rec["argv"][len(prefix):]
+        assert verb_tokens, action
+        assert "--output" not in verb_tokens and "--no-input" not in verb_tokens
+        if not gated:
+            assert "--dry-run" not in verb_tokens
+
+    # Shape regression: single-dash-id get — prepended flags before the
+    # positional, nothing trailing to demote.
+    tools.MAIL_TOOL.dispatch("get", {"id": "-abc123"})
+    args = rec["argv"]
+    assert args[:4] == [str(runner.PROTON_BIN), "--output", "json", "--no-input"]
+    assert args[4:] == ["mail", "messages", "get", "-abc123"]
+
+    # The dry-run argv check asserts that prepended region as a whole prefix:
+    # a runner whose argv lost the --dry-run breaks the prefix and the call
+    # refuses before anything is applied.
+    def stripping_run(args, **kw):
+        runner.LAST_ARGV = [a for a in args if a != "--dry-run"]
+        return SimpleNamespace(stdout=b"{}", stderr=b"", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", stripping_run)
+    with pytest.raises(RuntimeError, match="dry-run argv check"):
+        tools.MAIL_TOOL.dispatch("trash", {"refs": ["1"], "confirm": False})

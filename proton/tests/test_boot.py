@@ -5,10 +5,18 @@ automated check: spawn `python -m proton_mcp.server` with stdin closed, give
 it a timeout, and require exit code 0 (clean EOF, no traceback, no hang).
 """
 
+import os
 import subprocess
 import sys
 
 import pytest
+
+# The spawned server must boot in stdio mode regardless of the caller's
+# environment: MCP_BEARER/MCP_PORT select the HTTP transport, so on a box
+# where those are set (this deployment's own host carries MCP_BEARER in the
+# session environment) the child would try to bind the live port 8010 and
+# die on Address already in use instead of exiting on closed stdin.
+BOOT_ENV = {k: v for k, v in os.environ.items() if not k.startswith("MCP_")}
 
 
 def test_server_exits_cleanly_on_closed_stdin():
@@ -18,6 +26,7 @@ def test_server_exits_cleanly_on_closed_stdin():
         capture_output=True,
         text=True,
         timeout=30,
+        env=BOOT_ENV,
     )
     assert proc.returncode == 0, (
         f"exit {proc.returncode}\nstdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
@@ -33,5 +42,6 @@ def test_server_flags_dont_crash_boot(bad_args):
         capture_output=True,
         text=True,
         timeout=30,
+        env=BOOT_ENV,
     )
     assert proc.returncode == 0, f"exit {proc.returncode}\nstderr: {proc.stderr!r}"
