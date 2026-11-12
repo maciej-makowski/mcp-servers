@@ -4,15 +4,18 @@ Gating rules (structural, enforced here):
 - Gated (mutating) actions with confirm=False run the CLI with --dry-run and
   return a preview envelope; nothing is changed.
 - Gated actions with confirm=True run for real (no --dry-run).
-- Reads never get --dry-run.
+- Reads never get --dry-run. Downloads are reads: they write only into a
+  caller-named directory and touch no account state.
 - Bulk filter actions: default --limit 150 unless all=True or an explicit
   limit is given; all=True additionally requires confirm=True to apply.
-- Belt-and-braces: if a dry-run was requested but --dry-run is missing from
-  the argv the runner actually built, raise RuntimeError.
+- Dry-run argv check: if a gated call requested --dry-run but the argv the
+  runner actually built does not lead with the prepended global-flags region
+  including --dry-run, raise RuntimeError.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from . import runner
@@ -39,6 +42,7 @@ from .base import (
 from .photos import PHOTOS_TOOL  # noqa: F401  (re-exported)
 
 __all__ = [
+    "DEFAULT_ATTACHMENT_DEST_DIR",
     "DEFAULT_BULK_LIMIT",
     "NEXT_STEP",
     "DRY_RUN_FAILED_NEXT_STEP",
@@ -62,6 +66,79 @@ __all__ = [
     "CALENDAR_TOOL",
     "DRIVE_TOOL",
 ]
+
+# Attachment downloads default to the shared spool receive dir; the constant
+# is a module global read at call time, so tests can point it at a tmp path.
+DEFAULT_ATTACHMENT_DEST_DIR = "/srv/mcp_files/receive"
+
+# The CLI's private temp pattern inside a destination dir (kit.destination.go:
+# commit() writes a 0600 temp then renames). Excluded from the snapshot and
+# the diff — a CLI killed mid-write leaves such residue, never a download.
+_ATTACHMENT_TEMP_PREFIX = ".proton-cli-"
+
+
+def _snapshot_dir(dest_dir: str) -> dict[str, tuple[int, int]]:
+    """Snapshot {name: (size, mtime_ns)} for regular files, skipping temps."""
+    snap: dict[str, tuple[int, int]] = {}
+    try:
+        entries = list(os.scandir(dest_dir))
+    except OSError:
+        return snap
+    for entry in entries:
+        try:
+            if not entry.is_file() or entry.name.startswith(_ATTACHMENT_TEMP_PREFIX):
+                continue
+            st = entry.stat()
+        except OSError:
+            continue
+        snap[entry.name] = (st.st_size, st.st_mtime_ns)
+    return snap
+
+
+def _diff_written(dest_dir: str, before: dict[str, tuple[int, int]]) -> tuple[list[dict], list[str]]:
+    """Diff the destination dir against `before`.
+
+    A file is "written" when it is new, or its size or mtime_ns changed.
+    Returns (files entries, written names): entries carry name and size as on
+    disk (post-SafeFilename); an entry whose file already existed and was
+    rewritten carries `changed: True` (a --force overwrite), absent for new
+    files. `.proton-cli-*` residue is excluded here as well as in the
+    snapshot, so a killed CLI's temp file is never reported or chmod'd.
+    """
+    files: list[dict] = []
+    written: list[str] = []
+    try:
+        entries = sorted(os.scandir(dest_dir), key=lambda e: e.name)
+    except OSError:
+        return files, written
+    for entry in entries:
+        try:
+            if not entry.is_file() or entry.name.startswith(_ATTACHMENT_TEMP_PREFIX):
+                continue
+            st = entry.stat()
+        except OSError:
+            continue
+        old = before.get(entry.name)
+        if old is None:
+            entry_info: dict = {"name": entry.name, "size": st.st_size}
+        elif (st.st_size, st.st_mtime_ns) != old:
+            entry_info = {"name": entry.name, "size": st.st_size, "changed": True}
+        else:
+            continue
+        files.append(entry_info)
+        written.append(entry.name)
+    return files, written
+
+
+def _chmod_0644(dest_dir: str, names: list[str]) -> None:
+    """chmod each written file to 0644, best effort (spool read-back needs it:
+    the CLI's commit() lands files 0600). One failing file never fails the
+    download."""
+    for name in names:
+        try:
+            os.chmod(os.path.join(dest_dir, name), 0o644)
+        except OSError:
+            pass
 
 
 class MailTool(_BaseTool):
@@ -106,7 +183,113 @@ class MailTool(_BaseTool):
             if not params.get("id"):
                 return self._validation_error("get requires 'id'")
             return self._run(["mail", "messages", "get", str(params["id"])])
+        if action == "attachments_list":
+            return self._attachment_list(
+                action, ["mail", "messages", "attachments", "list"], params
+            )
+        if action == "conversation_attachments_list":
+            return self._attachment_list(
+                action, ["mail", "conversations", "attachments", "list"], params
+            )
+        if action == "attachments_download":
+            return self._attachment_download(
+                action, ["mail", "messages", "attachments", "download"], params
+            )
+        if action == "conversation_attachments_download":
+            return self._attachment_download(
+                action, ["mail", "conversations", "attachments", "download"], params
+            )
         raise ValueError(f"unknown read action {action!r} for mail")
+
+    def _attachment_list(self, action: str, head: list[str], params: dict) -> dict:
+        """Attachment list is a passthrough read: flags first, then `--`, then
+        the reference positional (the `--` marks the wrapper's own data for
+        every ref shape — dash-ids included; the runner's global flags are
+        prepended before the verb argv). No transformation of the envelope."""
+        ref = params.get("id")
+        if not isinstance(ref, str) or not ref:
+            return self._validation_error(
+                f"{action} requires 'id' (message or conversation reference as a string)"
+            )
+        args = list(head)
+        if params.get("include_inline"):
+            args.append("--include-inline")
+        args.append("--")
+        args.append(ref)
+        return self._run(args)
+
+    def _attachment_download(self, action: str, head: list[str], params: dict) -> dict:
+        """Attachment download: a read that writes into a caller-named
+        directory (default: the shared spool receive dir). Never --dry-run,
+        never --dest (single named file or stdout); the CLI's JSON result
+        never names written files, so the wrapper derives them itself from a
+        before/after directory diff and chmods each to 0644 for read-back."""
+        ref = params.get("id")
+        if not isinstance(ref, str) or not ref:
+            return self._validation_error(
+                f"{action} requires 'id' (message or conversation reference as a string)"
+            )
+        attachment = params.get("attachment")
+        if attachment is not None and (not isinstance(attachment, str) or not attachment):
+            return self._validation_error(
+                f"{action}: 'attachment' must be a non-empty string (attachment id "
+                f"or name), got {type(attachment).__name__}"
+            )
+        dest_dir = params.get("dest_dir")
+        if dest_dir is not None and not isinstance(dest_dir, str):
+            return self._validation_error(
+                f"{action}: 'dest_dir' must be a string, got {type(dest_dir).__name__}"
+            )
+        if dest_dir == "":
+            return self._validation_error(
+                f"{action}: 'dest_dir' must not be empty (omit it for the spool default)"
+            )
+        if not dest_dir:
+            dest_dir = DEFAULT_ATTACHMENT_DEST_DIR
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except OSError as exc:
+            return self._validation_error(
+                f"{action}: cannot create dest_dir {dest_dir!r}: {exc}"
+            )
+
+        args = [*head, "--dest-dir", dest_dir]
+        if params.get("force"):
+            args.append("--force")
+        # When one attachment is selected the CLI downloads exactly that one;
+        # --include-inline is its download-them-all filter and is omitted
+        # regardless of the parameter.
+        if params.get("include_inline") and attachment is None:
+            args.append("--include-inline")
+        # Mark the wrapper's own data: every positional sits after the `--`,
+        # so dash-ids and dash-leading names stay data (the CLI's own
+        # shape-guessing never runs on these calls).
+        args.append("--")
+        args.append(ref)
+        if attachment is not None:
+            args.append(attachment)
+
+        before = _snapshot_dir(dest_dir)
+        res = self._run(args, timeout=300)
+        files, written = _diff_written(dest_dir, before)
+        _chmod_0644(dest_dir, written)
+
+        out = dict(res)
+        out["dest_dir"] = dest_dir
+        out["files"] = files
+        out["count"] = len(files)
+        data = res.get("data")
+        if (
+            res.get("success")
+            and isinstance(data, dict)
+            and isinstance(data.get("count"), (int, float))
+            and int(data["count"]) != len(files)
+        ):
+            # Direction-neutral: a concurrent spool writer inflates `files`,
+            # a concurrent deletion between write and diff deflates it. The
+            # CLI's own count stays visible as data.count (advisory).
+            out["note"] = "the number of files differs from the CLI's reported count"
+        return out
 
     def _mutate(self, action: str, params: dict, dry_run: bool = False) -> dict:
         if action == "send":
@@ -327,7 +510,7 @@ class DriveTool(_BaseTool):
             if params.get("force"):
                 args.append("--force")
             # Download is a read (writes only into the caller-named dir):
-            # never issued with --dry-run, so no belt-and-braces check.
+            # never issued with --dry-run, so no dry-run argv check.
             res = self._run(args)
             # Shared-spool use: the CLI's in-container umask writes single-file
             # downloads as 0600, which locks the agent out of receive-dir

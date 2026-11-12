@@ -17,7 +17,7 @@ DEFAULT_BULK_LIMIT = 150
 
 NEXT_STEP = "Nothing changed. Ask user to approve, then call again with confirm=true."
 
-# Belt-and-braces: the LAST_ARGV check is post-hoc -- it reads the runner's
+# Dry-run argv check: the LAST_ARGV check is post-hoc -- it reads the runner's
 # recorded argv *after* subprocess.run has returned, never during. A
 # single-loop (non-threaded) MCP server therefore never races on it; if the
 # server ever gains a thread pool, this check needs its own lock instead.
@@ -174,12 +174,31 @@ class _BaseTool:
 
     # -- shared helpers -------------------------------------------------------
 
-    def _run(self, args: list[str], dry_run: bool = False, stdin_text: str | None = None) -> dict:
-        res = runner.run(args, stdin_text=stdin_text, dry_run=dry_run)
-        if dry_run and (runner.LAST_ARGV or [])[-1:] != ["--dry-run"]:
-            raise RuntimeError(
-                "runner dropped --dry-run; refusing to proceed (belt-and-braces check)."
-            )
+    def _run(
+        self,
+        args: list[str],
+        dry_run: bool = False,
+        stdin_text: str | None = None,
+        timeout: int | None = None,
+    ) -> dict:
+        # Optional timeout seam: forward a non-default budget to the runner
+        # (long-running download actions pass timeout=300); when absent, keep
+        # the runner's own 60 s default intact for every existing caller.
+        if timeout is None:
+            res = runner.run(args, stdin_text=stdin_text, dry_run=dry_run)
+        else:
+            res = runner.run(args, stdin_text=stdin_text, dry_run=dry_run, timeout=timeout)
+        # Dry-run argv check: the runner prepends its persistent global flags
+        # before the verb argv (--output json --no-input, plus --dry-run for
+        # gated calls), so assert that prepended region as a whole prefix — a
+        # post-hoc verification that a requested --dry-run actually reached
+        # the argv the subprocess saw.
+        if dry_run:
+            prefix = [str(runner.PROTON_BIN), "--output", "json", "--no-input", "--dry-run"]
+            if (runner.LAST_ARGV or [])[: len(prefix)] != prefix:
+                raise RuntimeError(
+                    "runner dropped --dry-run; refusing to proceed (dry-run argv check)."
+                )
         return res
 
     def _validation_error(self, msg: str) -> dict:

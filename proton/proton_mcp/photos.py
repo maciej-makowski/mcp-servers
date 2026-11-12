@@ -113,7 +113,7 @@ class PhotosTool(_BaseTool):
             if params.get("force"):
                 args.append("--force")
             # Download is a read (writes only into the caller-named dir):
-            # never issued with --dry-run, so no belt-and-braces check.
+            # never issued with --dry-run, so no dry-run argv check.
             return self._run(args)
 
         raise ValueError(f"unknown read action {action!r} for photos")

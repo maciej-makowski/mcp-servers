@@ -83,12 +83,15 @@ def test_json_parse_failure_falls_back_to_raw_text(recorder):
 
 # --- argument construction ---------------------------------------------------
 
-def test_appends_output_json_and_no_input(recorder):
+def test_prepends_output_json_and_no_input(recorder):
+    """The persistent global flags lead every argv (root-persistent flags +
+    TraverseChildren parse pre-subcommand placement; prepending keeps the
+    CLI's leading-dash-id protection intact — see the module docstring)."""
     recorder["proc"] = make_proc()
     runner.run(["mail", "messages", "list"])
     args = recorder["args"]
-    assert args[:3] == [BIN, "mail", "messages"]
-    assert args[-4:] == ["list", "--output", "json", "--no-input"]
+    assert args[:4] == [BIN, "--output", "json", "--no-input"]
+    assert args[4:] == ["mail", "messages", "list"]
 
 
 def test_no_dry_run_by_default(recorder):
@@ -97,10 +100,15 @@ def test_no_dry_run_by_default(recorder):
     assert "--dry-run" not in recorder["args"]
 
 
-def test_dry_run_flag_appended(recorder):
+def test_dry_run_flag_immediately_after_global_flags(recorder):
+    """Gated calls carry --dry-run in the prepended region, immediately after
+    the global flags and before the verb tokens."""
     recorder["proc"] = make_proc()
     runner.run(["mail", "messages", "trash"], dry_run=True)
-    assert recorder["args"][-1] == "--dry-run"
+    args = recorder["args"]
+    assert args[:4] == [BIN, "--output", "json", "--no-input"]
+    assert args[4] == "--dry-run"
+    assert args[5:] == ["mail", "messages", "trash"]
 
 
 # --- stdin -------------------------------------------------------------------

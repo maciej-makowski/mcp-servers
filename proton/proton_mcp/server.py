@@ -46,14 +46,61 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "Note: status is a count per folder and the CLI's count verb maps "
             "only the filter's folder key — other filter keys apply to "
             "list/search, not status. "
+            "Attachment list/download reads for single messages and whole "
+            "threads: downloads land in the spool receive dir by default and "
+            "are chmod 644 for agent read-back. "
             + GATING_DOC
         ),
-        "reads": ("status", "list", "search", "get"),
+        "reads": (
+            "status",
+            "list",
+            "search",
+            "get",
+            "attachments_list",
+            "attachments_download",
+            "conversation_attachments_list",
+            "conversation_attachments_download",
+        ),
         "gated": tuple(sorted(tools.MAIL_TOOL.GATED_ACTIONS)),
         "filter": True,
         "extra_params": {
             "query": {"type": "string", "description": "Search query (search action)"},
-            "id": {"type": "string", "description": "Message id (get action)"},
+            "id": {
+                "type": "string",
+                "description": "Message or conversation reference (get and attachment actions)",
+            },
+            "attachment": {
+                "type": "string",
+                "description": (
+                    "One attachment by id (preferred) or by its own name (both "
+                    "downloads); absent means all of them. A name matching two "
+                    "attachments case-insensitively is refused by the CLI (exit 4) "
+                    "with the candidate ids to choose from"
+                ),
+            },
+            "dest_dir": {
+                "type": "string",
+                "description": (
+                    "Local directory to download into (both downloads); absent: the "
+                    "shared spool receive dir /srv/mcp_files/receive"
+                ),
+            },
+            "force": {
+                "type": "boolean",
+                "description": (
+                    "Overwrite existing files (both downloads, CLI --force); absent: "
+                    "the CLI renames collisions to 'name (2).ext'"
+                ),
+            },
+            "include_inline": {
+                "type": "boolean",
+                "description": (
+                    "Include inline attachments (disposition inline, e.g. signature "
+                    "graphics); default off, matching the CLI. Never combined with "
+                    "the 'attachment' parameter (one attachment is downloaded "
+                    "exactly, inline filter not applicable)"
+                ),
+            },
             "to": {"type": "string", "description": "Recipient address (send)"},
             "subject": {"type": "string", "description": "Subject line (send)"},
             "body": {"type": "string", "description": "Body text, piped over stdin (send)"},

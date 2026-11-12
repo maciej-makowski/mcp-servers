@@ -1,8 +1,18 @@
 """Subprocess runner for the proton-cli binary.
 
-Every invocation: run `proton <args...> --output json --no-input`, pipe stdin
-text over stdin (never argv), parse stdout as JSON (fallback: raw text) and map
-the CLI's exit codes to a structured result dict.
+Every invocation: run `proton --output json --no-input [<--dry-run>] <args...>`
+— the persistent global flags are PREPENDED before the verb argv, never
+appended after it. They are registered on the CLI root's PersistentFlags()
+(root.TraverseChildren parses pre-subcommand placement), so prepending is
+valid; and it keeps the CLI's leading-dash-id protection intact: with flags
+appended last, a leading-dash positional would trigger the CLI's `--` insertion
+and demote those trailing flags to positional arguments; the resulting refusal
+then depended on the verb's arity (argument-count on fixed-arity verbs, a
+kit.Select hard-refusal on variadic gated verbs) for ~1 in 64 Base64URL ids
+that start with `-`; only if every demoted token also resolved as a real ref
+name could a dropped --dry-run have let a real run proceed. Pipe stdin text
+over stdin (never argv), parse stdout as JSON (fallback: raw text) and map the
+CLI's exit codes to a structured result dict.
 """
 
 from __future__ import annotations
@@ -13,7 +23,7 @@ from pathlib import Path
 
 PROTON_BIN = Path.home() / ".hermes" / "bin" / "proton"
 
-# Full argv of the last subprocess invocation (for belt-and-braces checks).
+# Full argv of the last subprocess invocation (for the dry-run argv check).
 LAST_ARGV: list[str] | None = None
 
 EXIT_MEANINGS = {
@@ -60,9 +70,12 @@ def run(
             error=f"proton binary not found at {PROTON_BIN}; install proton-cli there.",
         )
 
-    argv = [str(PROTON_BIN), *args, "--output", "json", "--no-input"]
+    # Global flags first, then (gated calls only) --dry-run, then the verb
+    # argv — see the module docstring for why the flags lead.
+    argv = [str(PROTON_BIN), "--output", "json", "--no-input"]
     if dry_run:
         argv.append("--dry-run")
+    argv += list(args)
 
     global LAST_ARGV
     LAST_ARGV = list(argv)
