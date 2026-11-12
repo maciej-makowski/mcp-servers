@@ -9,7 +9,8 @@ appended last, a leading-dash positional would trigger the CLI's `--` insertion
 and demote those trailing flags to positional arguments; the resulting refusal
 then depended on the verb's arity (argument-count on fixed-arity verbs, a
 kit.Select hard-refusal on variadic gated verbs) for ~1 in 64 Base64URL ids
-that start with `-`. Pipe stdin text
+that start with `-`; only if every demoted token also resolved as a real ref
+name could a dropped --dry-run have let a real run proceed. Pipe stdin text
 over stdin (never argv), parse stdout as JSON (fallback: raw text) and map the
 CLI's exit codes to a structured result dict.
 """

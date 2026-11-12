@@ -179,7 +179,9 @@ plus `dest_dir`, `files`, `count`:
   latent defect), while the variadic gated verbs (`trash`, `move`, `label`,
   `unlabel` with `refs`) joined the demoted tokens into the refs list and the
   CLI hard-refused in `kit.Select` on the first unresolvable one (exit 3,
-  nothing applied, after paying resolution for the real refs). The fix
+  nothing applied, after paying resolution for the real refs); only if every
+  demoted token also resolved as a real ref name could a dropped `--dry-run`
+  have let a real run proceed. The fix
   prepends the flags before the verb argv: all three (`--output`, `--dry-run`,
   `--no-input`) are registered on the CLI root's `PersistentFlags()` and
   `root.TraverseChildren = true` parses pre-subcommand placement, so
