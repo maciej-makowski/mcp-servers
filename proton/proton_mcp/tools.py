@@ -240,6 +240,10 @@ class MailTool(_BaseTool):
             return self._validation_error(
                 f"{action}: 'dest_dir' must be a string, got {type(dest_dir).__name__}"
             )
+        if dest_dir == "":
+            return self._validation_error(
+                f"{action}: 'dest_dir' must not be empty (omit it for the spool default)"
+            )
         if not dest_dir:
             dest_dir = DEFAULT_ATTACHMENT_DEST_DIR
         try:

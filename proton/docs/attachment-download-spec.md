@@ -5,13 +5,13 @@
 **Source:** this increment implements `proton-attachment-download-design-final.md`
 (Rev 8, 2026-11-12) from the agent's design tree (maciej-makowski/hermes-designs).
 This spec is self-contained: repo readers need neither the design doc nor its
-evidence dir — every mechanic is stated here, and every claim maps to a named
+evidence dir: every mechanic is stated here, and every claim maps to a named
 test in `proton/tests/`.
 
 ## 1. What ships
 
-Four read actions on the existing `proton_mail` tool — no fifth tool family, no
-scope discriminator parameter; one action per CLI argv shape:
+Four read actions on the existing `proton_mail` tool: no fifth tool family, no
+scope discriminator parameter, one action per CLI argv shape:
 
 | Action | CLI verb argv (flags first, `--`, positionals last) |
 |---|---|
@@ -22,38 +22,38 @@ scope discriminator parameter; one action per CLI argv shape:
 
 Plus the changes that make them correct end to end:
 
-- `proton_mcp/runner.py` — the persistent global flags are **prepended** before
+- `proton_mcp/runner.py`: the persistent global flags are **prepended** before
   the verb argv instead of appended after the positionals (§6).
-- `proton_mcp/base.py` — `_run` gains an optional `timeout` kwarg; the dry-run
+- `proton_mcp/base.py`: `_run` gains an optional `timeout` kwarg; the dry-run
   argv check moves from an argv-tail match to the prepended region as a whole
   prefix (§6, §7).
-- `proton_mcp/tools.py` — four read branches, the download diff/chmod helpers,
+- `proton_mcp/tools.py`: four read branches, the download diff/chmod helpers,
   and the `DEFAULT_ATTACHMENT_DEST_DIR` constant (§3, §4).
-- `proton_mcp/server.py` — the `proton_mail` schema derives the four actions
+- `proton_mcp/server.py`: the `proton_mail` schema derives the four actions
   and the new params from the tool layer's tables (§8).
 
 Registered tool count stays 4 (`proton_mail`, `proton_calendar`, `proton_drive`,
-`proton_photos`) — the actions live inside `proton_mail`.
+`proton_photos`); the actions live inside `proton_mail`.
 
 ## 2. CLI contract (pinned: proton-cli v5.1.0, the deployed binary)
 
 All four verbs are registered commands at v5.1.0. Shapes used here:
 
-- `attachments list REF [--include-inline]` — `REF` resolves by id or by
+- `attachments list REF [--include-inline]`: `REF` resolves by id or by
   subject text (an id-shaped ref short-circuits; otherwise keyword lookup).
   For conversations the same shape resolves via conversation resolution.
 - `attachments download REF [ATTACHMENT_REF] [--dest DIR | --dest-dir DIR]
-  [--force] [--include-inline]` — `ATTACHMENT_REF` resolves by attachment id
+  [--force] [--include-inline]`: `ATTACHMENT_REF` resolves by attachment id
   outright, or by name case-insensitively; a name matching two attachments is
   refused (exit 4) with the candidate ids. `--dest-dir` is created if missing
   (`MkdirAll` 0755) and refuses a path that exists as a non-directory.
 - List rows carry `id, name, size, mime_type, disposition` (conversation rows
   add `message_id`); inline rows (`disposition: "inline"`) are dropped unless
   `--include-inline`. List output is unpaged and machine output keys the rows
-  under the table noun beside a `count` — the list actions return the runner's
+  under the table noun beside a `count`; the list actions return the runner's
   passthrough of that envelope unchanged.
 - Download JSON output never names written files: it emits
-  `{action: "downloaded", count, dry_run}` — the download-all path adds
+  `{action: "downloaded", count, dry_run}`; the download-all path adds
   `kind` ("attachment") and never `name`; the download-one path adds `name`
   (basename) and no `kind`. The wrapper therefore derives the written-file
   list itself (§4).
@@ -84,13 +84,14 @@ and both sub-verbs on the deployed binary (no login needed), diffed against
 | `force` | bool, optional | both downloads | Overwrite existing files (CLI `--force`). Absent: the CLI renames collisions to `name (2).ext`. |
 | `include_inline` | bool, optional | all four | Include inline attachments (disposition `inline`, e.g. signature graphics). Default off, matching the CLI. |
 
-Validation before any CLI run (structured validation errors — `success: false`,
+Validation before any CLI run (structured validation errors, `success: false`,
 `validation: true`, `exit_code: null`; the CLI is never invoked):
 
 - `id` present and a string (lists and ints are refused, not stringified).
-- `attachment`, when present, a non-empty string — a list is rejected at the
+- `attachment`, when present, a non-empty string; a list is rejected at the
   boundary (a stringified list would smuggle itself into one argv element).
-- `dest_dir`, when present, a string.
+- `dest_dir`, when present, a non-empty string; the empty string is refused at
+  validation (aligned with the drive download's dest_dir handling).
 - `os.makedirs(dest_dir, exist_ok=True)` runs before the snapshot; failure is
   a structured validation error naming the path.
 
@@ -107,18 +108,18 @@ The CLI's JSON never names written files, so the wrapper derives them:
    (the CLI's private temp pattern).
 2. Run the CLI with `timeout=300` (§7). Downloads never carry `--dry-run`.
 3. Diff the snapshot: a file is *written* when it is new, or its size or
-   `mtime_ns` changed — `.proton-cli-*` names are excluded at diff time as
+   `mtime_ns` changed; `.proton-cli-*` names are excluded at diff time as
    well (a CLI killed on timeout or OOM skips its own temp cleanup; residue is
    never reported, never chmod'd). Collision renames appear as new names;
    `--force` overwrites appear as changed entries.
-4. `chmod` each written file to 0644, best effort — one failing file never
+4. `chmod` each written file to 0644, best effort: one failing file never
    fails the download (the CLI's `commit()` lands files 0600, which would lock
    the agent out of spool read-back).
 5. Build the envelope (§5).
 
 On a CLI failure mid-loop (one attachment undownloadable) the CLI exits
 non-zero; files written before the failure remain on disk. The envelope then
-reports `success: false` and still lists the partial file set — `files` is the
+reports `success: false` and still lists the partial file set; `files` is the
 truth about what landed, `count` is `len(files)`, and the CLI's own count
 stays visible as `data.count` (advisory).
 
@@ -147,7 +148,7 @@ plus `dest_dir`, `files`, `count`:
   `note: "the number of files differs from the CLI's reported count"`
   (direction-neutral: a concurrent spool writer inflates `files`, a concurrent
   deletion between write and diff deflates it). When `success` is false the
-  same shape carries the failure and the partial `files` — no `note` (the note
+  same shape carries the failure and the partial `files`; no `note` (the note
   is a success-run signal), and no `applied` key (that key belongs to gated
   actions only).
 - List actions return the runner's passthrough unchanged
@@ -158,11 +159,11 @@ plus `dest_dir`, `files`, `count`:
 
 - The four actions are reads: no `confirm`, no `--dry-run`, no dry-run argv
   check (that check exists for gated calls only). They write only into a
-  caller-named directory and touch no account state — the drive and photos
+  caller-named directory and touch no account state; the drive and photos
   download actions set this precedent.
 - `--dest-dir` is always emitted, so the CLI's write-into-CWD behavior
   (omitting both destination flags) is unreachable from the wrapper; the bare
-  single-file `--dest` (and `--dest -` stdout) is never emitted — the text-only
+  single-file `--dest` (and `--dest -` stdout) is never emitted; the text-only
   runner cannot carry binary stdout, and a custom final name is a
   post-download rename in the spool.
 - Flags first, then `--`, then positionals: the wrapper marks its own data for
@@ -172,21 +173,26 @@ plus `dest_dir`, `files`, `count`:
   `--output json --no-input` (and `--dry-run`) after the positionals; proton
   ids are Base64URL, so ~1 id in 64 begins with `-`, and when such an id
   triggered the CLI's `preprocessArgs` `--` insertion, the trailing flags were
-  demoted to positional arguments — an argument-count refusal for every verb
-  (`mail messages get <id>` failed ~1 in 64 through the wrapper; a pre-existing
-  latent defect). The fix prepends the flags before the verb argv: all three
-  (`--output`, `--dry-run`, `--no-input`) are registered on the CLI root's
-  `PersistentFlags()` and `root.TraverseChildren = true` parses
-  pre-subcommand placement, so `[proton, --output, json, --no-input,
-  <--dry-run>, <verb argv...>]` is valid; prepending also removes the
-  demotion failure for all verbs at once and makes the new actions' `--`
-  separator safe to combine with the template. What stays open: double-dash
-  ids in the older verbs (the new actions mark their own data with `--`; the
-  older verbs do not) — the CLI's contract leaves that to the caller.
+  demoted to positional arguments. The refusal then depended on the verb's
+  arity: fixed-arity verbs refused with an argument-count error (`mail
+  messages get <id>` failed ~1 in 64 through the wrapper, a pre-existing
+  latent defect), while the variadic gated verbs (`trash`, `move`, `label`,
+  `unlabel` with `refs`) joined the demoted tokens into the refs list and the
+  CLI hard-refused in `kit.Select` on the first unresolvable one (exit 3,
+  nothing applied, after paying resolution for the real refs). The fix
+  prepends the flags before the verb argv: all three (`--output`, `--dry-run`,
+  `--no-input`) are registered on the CLI root's `PersistentFlags()` and
+  `root.TraverseChildren = true` parses pre-subcommand placement, so
+  `[proton, --output, json, --no-input, <--dry-run>, <verb argv...>]` is
+  valid; prepending removes the demotion failure for every verb at once and
+  makes the new actions' `--` separator safe to combine with the template.
+  What stays open: double-dash ids in the older verbs (the new actions mark
+  their own data with `--`; the older verbs do not); the CLI's contract
+  leaves that to the caller.
 - The dry-run argv check (gated calls, `base.py::_run`) moved with the flag:
-  it asserts the prepended region as a whole prefix —
-  `[PROTON_BIN, "--output", "json", "--no-input", "--dry-run"]` for gated
-  calls — instead of the old argv-tail match, which existed only because the
+  it asserts the prepended region as a whole prefix
+  (`[PROTON_BIN, "--output", "json", "--no-input", "--dry-run"]` for gated
+  calls) instead of the old argv-tail match, which existed only because the
   flags used to be appended last. A runner that drops the flag breaks the
   prefix and the call refuses with `RuntimeError` before anything is applied.
 - The action enum and the tool schema derive from the tool layer's tables, so
@@ -199,7 +205,7 @@ plus `dest_dir`, `files`, `count`:
 ## 7. Timeout seam (`proton_mcp/base.py`)
 
 `_BaseTool._run` gained an optional `timeout` kwarg forwarded to
-`runner.run` — forward only when set, so every existing caller keeps the
+`runner.run`; forward only when set, so every existing caller keeps the
 runner's own 60 s default untouched. Both download actions pass
 `timeout=300` (a conversation download runs one API fetch plus one attachment
 fetch per attachment, serially); the list actions use the default. The runner
@@ -241,7 +247,7 @@ Exit codes already map through the runner (2 auth, 3 not-found, 4 ambiguous,
 ## 10. Test map (17 named tests)
 
 Hermetic: monkeypatched runner/subprocess, no network, no real Proton calls.
-Items 1–15 live in `proton/tests/test_tools.py`, 16–17 in
+Items 1 to 15 live in `proton/tests/test_tools.py`, 16 and 17 in
 `proton/tests/test_mcp_tools.py` (parametrized functions expand to multiple
 test IDs).
 
@@ -259,7 +265,7 @@ test IDs).
 | 10 | `test_attachments_download_partial_failure_files_kept_and_count_note` | CLI failure keeps `success: false` + partial `files` (no `applied` key); success run with diff-count ≠ `data.count` sets the note for both inflated and deflated diffs |
 | 11 | `test_attachments_download_include_inline_omitted_when_attachment_set` | `--include-inline` omitted when `attachment` is set, regardless of the parameter; emitted for download-all when requested |
 | 12 | `test_run_timeout_seam_forwards_to_runner` | `_run` forwards `timeout` to `runner.run` (60 s default intact for existing callers); both downloads pass 300, lists use the default |
-| 13 | `test_attachments_download_validation_errors` | missing `id`; `attachment` as a list; makedirs failure naming the path — structured validation errors, CLI never run |
+| 13 | `test_attachments_download_validation_errors` | missing `id`; `attachment` as a list; the empty `dest_dir` string; makedirs failure naming the path, all structured validation errors with the CLI never run |
 | 14 | `test_attachments_download_never_dry_run_sweep` | no `--dry-run` in any download argv (sweep over every download case) |
 | 15 | `test_attachments_download_dest_dir_sweep` | `--dest-dir` in every download argv (sweep mirroring item 14); bare `--dest` never emitted |
 | 16 | `test_proton_mail_schema_carries_attachment_actions_and_params` | enum carries the four actions; the four new params with documented types; no confirm requirement on reads |
@@ -267,7 +273,7 @@ test IDs).
 
 The prefix-refusal behavior of the moved check is also pinned independently by
 `test_dry_run_argv_check_runtime_error_if_flag_dropped` (renamed from the old
-belt-and-braces test to the literal mechanism name). Pre-existing tests were
+argv-tail check to the literal mechanism name). Pre-existing tests were
 updated only where the runner template change required it: the
 `tail_without_globals` helpers in `test_tools.py`/`test_photos.py` now strip
 the prepended region, `test_runner.py` documents the prepended template
@@ -282,10 +288,10 @@ argv layout and the grown enum.
   does not apply to an existing container) and a gateway restart afterwards to
   refresh the schema; no quadlet edits (spool mount and MemoryMax are already
   in place).
-- **Open before merge:** the pre-merge contract audit — run `--help` for the
+- **Open before merge:** the pre-merge contract audit: run `--help` for the
   four target verbs on the deployed v5.1.0 binary and diff against §1's table;
   any drift reopens the argv shapes.
-- **Open after deploy:** the smoke ladder — `attachments_list` on a real
+- **Open after deploy:** the smoke ladder: `attachments_list` on a real
   message with attachments, `attachments_download` of one attachment by id
   into a fresh spool subdirectory, host-side read-back (0644, agent-readable)
   with a size cross-check against the list row, then one
@@ -294,7 +300,7 @@ argv layout and the grown enum.
 - Known limits (accepted): no end-to-end content digest for attachments
   (integrity evidence is the list row's `size` against the written file, plus
   local `sha256sum` on demand); each attachment decrypts whole in CLI RAM
-  (container `MemoryMax=384M` — a single attachment approaching ~300 MB risks
+  (container `MemoryMax=384M`; a single attachment approaching ~300 MB risks
   an OOM kill reported as a non-zero exit); the spool is tmpfs and wiped at
   boot, so uncollected downloads are lost on reboot.
 - Out of scope (future increments): outgoing mail attachments with the send

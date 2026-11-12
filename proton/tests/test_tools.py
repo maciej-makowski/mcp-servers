@@ -1092,13 +1092,15 @@ def test_run_timeout_seam_forwards_to_runner(rec, tmp_dest, monkeypatch):
     [
         ("missing-id", {}, "id"),
         ("attachment-as-list", {"id": "abc123", "attachment": ["a.pdf"]}, "attachment"),
+        ("empty-dest-dir", {"id": "abc123", "dest_dir": ""}, "dest_dir"),
         ("makedirs-failure", None, "dest_dir"),
     ],
 )
 def test_attachments_download_validation_errors(rec, tmp_path, case, params, needle):
-    """Item 13: structured validation errors before any argv build — a
+    """Item 13: structured validation errors before any argv build: a
     missing id; attachment given as a list (a stringified list would smuggle
-    itself into one argv element); an un-creatable dest_dir naming the path.
+    itself into one argv element); the empty dest_dir string (aligned with
+    the drive download's refusal); an un-creatable dest_dir naming the path.
     The CLI never runs."""
     if case == "makedirs-failure":
         blocked = tmp_path / "blocked"

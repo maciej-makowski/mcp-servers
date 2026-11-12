@@ -6,8 +6,10 @@ appended after it. They are registered on the CLI root's PersistentFlags()
 (root.TraverseChildren parses pre-subcommand placement), so prepending is
 valid; and it keeps the CLI's leading-dash-id protection intact: with flags
 appended last, a leading-dash positional would trigger the CLI's `--` insertion
-and demote those trailing flags to positional arguments (an argument-count
-refusal for ~1 in 64 ids — Base64URL ids starting with `-`). Pipe stdin text
+and demote those trailing flags to positional arguments; the resulting refusal
+then depended on the verb's arity (argument-count on fixed-arity verbs, a
+kit.Select hard-refusal on variadic gated verbs) for ~1 in 64 Base64URL ids
+that start with `-`. Pipe stdin text
 over stdin (never argv), parse stdout as JSON (fallback: raw text) and map the
 CLI's exit codes to a structured result dict.
 """

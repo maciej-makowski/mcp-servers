@@ -59,7 +59,7 @@ Log in once, user-only (never automate this — password + 2FA):
 
 | Tool | Reads (run directly) | Gated (`confirm=true`) |
 |---|---|---|
-| `proton_mail` | `status`, `list`, `search`, `get` | `send`, `move`, `label`, `unlabel`, `mark`, `trash` |
+| `proton_mail` | `status`, `list`, `search`, `get`, `attachments_list`, `attachments_download`, `conversation_attachments_list`, `conversation_attachments_download` | `send`, `move`, `label`, `unlabel`, `mark`, `trash` |
 | `proton_calendar` | `calendars`, `events_list`, `events_get` | `events_create`, `events_delete` |
 | `proton_drive` | `list`, `get`, `download` | `upload`, `trash` |
 | `proton_photos` | `list`, `albums`, `download` | `trash`, `delete`, `favorite`, `unfavorite` |
