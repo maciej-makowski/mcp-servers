@@ -75,3 +75,59 @@ Deployment (quadlet, install.sh and update.sh wiring, key-rotation runbook) ship
 ---
 
 Status: Phase 1 skeleton (the `garmin/` package, its container build and CI wiring). Deploy wiring lands in the deploy PR. Underlying design: `garmin-connect-integration-design-final.md` Rev 8, adopted Nov 7 2026.
+
+## Local data archive (garmin-local-archive design, Rev 7 ADOPTED)
+
+The server optionally carries a **local on-box archive** of everything the
+Personal API reaches, the **off-host backup** of it, and — once the store is
+ready — the **read-through cache** in front of the seven tools. Everything
+below is gated behind two non-credential env knobs in `garmin.env`
+(`deploy/garmin.env.example`); with them unset the server behaves exactly as
+described above: live reads only, no background task.
+
+| Env var | Values | Meaning |
+|---|---|---|
+| `GARMIN_STORE_DIR` | a directory (OD-2: `/home/mcp/garmin-store`) | the on-box store, 0700 owned by mcp, bind-mounted into the container |
+| `GARMIN_STORE_MODE` | `off` (default) / `live_only` / `read_through` | `off`: reads live as today, no sync. `live_only`: the sync writes the store, reads stay live (deploy flow + §5.4 rebuilds). `read_through`: reads serve from the store with a live fallback; rejected at startup unless the store's init checks pass (§5.1) |
+| `GARMIN_SYNC_MAX_CALLS` | int (default 1500) | per-run upstream-call hard cap, aborts cleanly at a chunk boundary (§4.3) |
+| `GARMIN_SYNC_PACING_S` | float (default 2) | pacing floor between two upstream calls (§4.3) |
+| `GARMIN_SYNC_HOURLY` | `1` | enables the hourly refresher tier — **OFF** until the phase-5 verdict (decisions M1/OD-3) |
+
+What runs when the store is configured (`live_only` or `read_through`):
+
+- A one-time **backfill** starts on deploy (M4): paced, resumable, spread
+  over nights by the run budget. Stage 0 is the OD-7 sparse probe that sets
+  the global anchor date A; then activities paging, per-activity
+  detail/workouts/ZIP, ranged families in canonical chunks, per-day families
+  over the data-bearing era, and the three point reads.
+- A **nightly sweep** self-schedules at 04:17 local inside the server
+  process (a FastMCP lifespan task — no second container, no second
+  credential): trailing 32-day window, per-day families, arrival-safe
+  activity paging, point reads, then gap backfill; a weekly re-verify of the
+  newest 30 activities catches edits (OD-8).
+- The sync reuses the module-level client and token state (one key, one
+  token flow); it never touches the token cache file itself. A surviving
+  429/5xx — or a 403 — opens a per-family circuit (30 min doubling to 6 h)
+  visible in `garmin_api_status`; a crash in the sync kills only the run,
+  never the tools (§7.5 acceptance test).
+
+Store layout (§3.1): `activities/<id>/` (search record, detail, workouts,
+ZIP), `raw/<family>/` canonical chunks on the anchor grid (§3.2),
+`perday/<family>/` day files, `point/`, plus `index.db` (a derived SQLite
+index — rebuildable with `python garmin_mcp/reindex.py <store_dir>`) and
+`state/sync-state.json` (watermarks, cursors, circuits). Files are primary;
+every write is atomic.
+
+Once the store passes its init checks, flip `GARMIN_STORE_MODE` to
+`read_through`: reads serve stored history with zero upstream calls, today
+and stale days refresh live through their canonical chunk, and
+`garmin_api_status` gains an additive `store` block (coverage, holes,
+backfill progress, circuits, and the age-aware `off_host` backup health
+rendered from `state/backup-status.json`, §5.3).
+
+Off-host backup (§6): `deploy/garmin-archive-backup.sh` (root cron 04:47)
+stamps the store, encrypts with the matrix age recipient (M3), uploads to
+`/garmin-backups` on Proton Drive as hermes, prunes 14 days Drive-side and 7
+stamps locally; `deploy/garmin-archive-check.sh` (root cron 09:43) is the
+independent layer-2 checker that writes `state/backup-status.json` and
+alarms through the Hermes bot hook when the off-host copy goes stale.
