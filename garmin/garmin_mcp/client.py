@@ -1,8 +1,8 @@
 """Thin wrapper over the official Garmin Connect Personal API client.
 
 ``PersonalApiAuthenticator`` exchanges the ``GARMIN_API_KEY`` env var for a
-24h bearer token and caches it 0600, re-deriving it when less than an hour
-of validity remains; ``GarminPersonalApiClient`` handles the
+24h bearer token and caches it 0600, re-deriving it from the key when less
+than an hour of validity remains; ``GarminPersonalApiClient`` handles the
 authenticated reads. This module wires the two together, maps every tool
 family to the matching official wrapper, and tracks per-family last errors
 for ``garmin_api_status``.
