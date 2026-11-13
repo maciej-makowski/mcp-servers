@@ -22,11 +22,11 @@ today (design doc §2.3, §4.5 last bullet, §7.4).
 | daily_weight.json | garmin_daily 2026-11-10..2026-11-12 | 3 d | dict shape with an empty dailyWeightSummaries list + range aggregates (totalAverage/previousDateWeight) — deliberately NOT date-sliceable: the read path replays it raw only when the request window equals the stored chunk window, and falls back live otherwise |
 | daily_body_battery.json | garmin_daily 2026-11-11..2026-11-12 | 2 d | list records keyed by "date" (not calendarDate); the 31-day auto-split (2 chunks) was verified live on 2026-11-08 per the design's smoke evidence |
 | daily_daily.json | garmin_daily 2026-11-11..2026-11-12 | 2 d | dict shape {"data": [day records]} |
-| daily_perday_spo2.json | garmin_daily 2026-11-11..2026-11-12 | 2 d | per-day family: each day's data IS the raw single-date response |
-| daily_perday_fitness_age.json | garmin_daily 2026-11-11..2026-11-12 | 2 d | per-day family |
-| daily_perday_heart_rate.json | garmin_daily 2026-11-11..2026-11-12 | 2 d | per-day family (intraday series) |
+| daily_perday_spo2.json | garmin_daily 2026-11-12 | 1 d | per-day family: the day's data IS the raw single-date response (with the full hourly + monitoring arrays) |
+| daily_perday_fitness_age.json | garmin_daily 2026-11-12 | 1 d | per-day family (components block) |
+| daily_perday_heart_rate.json | garmin_daily 2026-11-12 | 1 d | per-day family (intraday series, 2-min points) |
 
-Windows were chosen small (2-3 days; steps at the full 28-day cap window)
+Windows were chosen small (1-3 days; steps at the full 28-day cap window)
 rather than a full 30-day pull per family so the fixtures stay lean; one
 30-day pull per ranged family is unnecessary for shape fidelity because one
 ranged call returns one chunk piece either way. The families without a
