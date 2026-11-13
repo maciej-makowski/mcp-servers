@@ -102,7 +102,7 @@ Rails enforced by the wrapper on every bulk action:
    {"action": "send", "params": {"to": "x@example.com", "subject": "Hi", "body": "hello", "attach": ["/srv/mcp_files/send/report.pdf"]}}
    ```
 
-   → the CLI runs with `--dry-run`; response: `{"applied": false, "dry_run": true, "preview": {...}, "next_step": "Nothing changed. Ask user to approve, then call again with confirm=true."}` (omit `attach` for a plain send)
+   → the CLI runs with `--dry-run`; response: `{"applied": false, "dry_run": true, "preview": {...}, "next_step": "Nothing changed. Ask user to approve, then call again with confirm=true."}`
 
 2. Show the preview to the user. On explicit approval, call again with `confirm: true` (top level of the tool arguments, or `confirm: true` inside `params` — if both are given, `params.confirm` wins) → runs for real: `{"applied": true, "dry_run": false, ...}`.
 

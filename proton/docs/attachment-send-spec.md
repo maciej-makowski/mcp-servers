@@ -6,7 +6,7 @@
 (Rev 3, 2026-11-12) from the agent's design tree (maciej-makowski/hermes-designs).
 It is the follow-up that `proton/docs/attachment-download-spec.md` deferred as
 out-of-scope outgoing work. This spec is self-contained: repo readers need
-neither the design doc nor its evidence dir — every mechanic is stated here,
+neither the design doc nor its evidence dir; every mechanic is stated here,
 and every claim maps to a named test in `proton/tests/`.
 
 ## 1. What ships
@@ -17,7 +17,7 @@ plus attachments. No separate draft action, no `send_with_attachments` action.
 
 Plus the change that makes the branch usable at all: the shipped send argv
 carried no `--body` flag, and the CLI reads stdin only when the `--body` value
-is exactly `-` — so every send through the MCP exited 1 with "A body is
+is exactly `-`, so every send through the MCP exited 1 with "A body is
 required." before this increment. The rewritten argv fixes that, and the
 wrapper validates the body non-empty itself (the CLI's own pre-flight would
 see the flag value `-`, not the piped text, and an empty stdin would slip
@@ -51,7 +51,7 @@ required unless `--eml` is given.
 - Attachments ride local file paths: `ReadLocalAttachment` is `os.ReadFile`;
   the sent attachment's name is the path's basename; the MIME type follows
   the extension (default `application/octet-stream`). There is no stdin
-  source for attachments — the agent names the staged spool file exactly as
+  source for attachments; the agent names the staged spool file exactly as
   the attachment should read.
 - A send is one draft creation, N attachment uploads (one multipart POST per
   attachment, sequential), one delivery: N+2 mutating API calls. Failed sends
@@ -84,7 +84,7 @@ v5.1.0 → upstream main, the compose path is byte-identical (no drift to fold).
 
 `to` and `subject` keep their existing shape and validation.
 
-Validation chain (D8, in order — each step a structured validation error,
+Validation chain (D8, in order; each step a structured validation error,
 `success: false`, `validation: true`, `error` naming the path and the cause,
 `exit_code: null`; the CLI never runs):
 
@@ -108,7 +108,7 @@ Validation chain (D8, in order — each step a structured validation error,
    uncaught `OSError`).
 
 The cap's reasoning (D3's number against `MemoryMax=384M`): peak CLI RAM is
-about total + 2 × largest plus baseline — the CLI holds every attachment's
+about total + 2 × largest plus baseline; the CLI holds every attachment's
 bytes from compose until delivery, and each single upload adds roughly two
 more copies of that attachment (the encrypted packet and the multipart body).
 At the cap with typical multi-file sends (files of tens of MiB), peak stays
@@ -121,18 +121,18 @@ hidden one (§9); the design deliberately adds no second per-file number.
 - `ATTACH_SPOOL_ROOT = Path("/srv/mcp_files/send")` and
   `MAX_ATTACH_TOTAL_BYTES = 209_715_200` are module constants read at call
   time, so tests point them at tmp paths.
-- `_attach_shape_error` — the shape check (chain step 1), mirroring the
+- `_attach_shape_error`: the shape check (chain step 1), mirroring the
   `_refs_error` boundary lesson.
-- `_attach_gate` — mirror of the google `drive_upload` gate (evidence: that
+- `_attach_gate`: mirror of the google `drive_upload` gate (evidence: that
   wrapper resolves both sides and refuses anything not equal to or under the
   spool root), mapped onto `_validation_error` (the wrapper's established
   pre-CLI refusal shape) rather than a raised exception.
-- `_attach_files_error` — the regular-file check (chain step 3), post-gate.
+- `_attach_files_error`: the regular-file check (chain step 3), post-gate.
 - The send branch validates `to`/`subject` first (unchanged), then the body
   non-empty, then the attach chain in §3's order. The check keys on
   `"attach" in params` (presence-keyed): an absent key and `attach: []` are
   the two plain-send forms, and the empty list keeps the plain send's default
-  timeout — the 300 s budget binds to `paths`, not to the branch.
+  timeout; the 300 s budget binds to `paths`, not to the branch.
 - The body always rides stdin (`--body -`, the runner's `stdin_text`); attach
   values use the equals form (`--attach=<resolved absolute path>`), which
   binds each value at the token level instead of depending on pflag's
@@ -245,7 +245,7 @@ to tmp paths, so no test touches `/srv/mcp_files/send`.
 | 2 | `test_send_attach_argv_shape` | one staged file: argv ends with `--attach=<resolved path>` after the body flag; no positional elements |
 | 3 | `test_send_attach_multiple_paths_order` | two files: both `--attach=` flags present in parameter order |
 | 4 | `test_send_empty_attach_list_is_plain_send` | `attach: []` emits no `--attach` flags and keeps the default timeout |
-| 5 | `test_send_attach_containment_refusals` | out-of-root tmp path; `..` traversal; symlink pointing outside — each a structured validation error naming the path |
+| 5 | `test_send_attach_containment_refusals` | out-of-root tmp path; `..` traversal; symlink pointing outside; each a structured validation error naming the path |
 | 6 | `test_send_attach_existence_refusals` | missing file ("local file not found"); the spool root itself and a directory ("not a regular file") |
 | 7 | `test_send_attach_cap_refusal_and_boundary` | one byte over the cap refuses with the total and the cap named; exactly at the cap passes to argv |
 | 8 | `test_send_body_required_validation` | body absent, empty string, non-string each refuse as structured validation errors |
@@ -275,7 +275,7 @@ to tmp paths, so no test touches `/srv/mcp_files/send`.
   the staged file's bytes; clean up the smoke mail (trash, gated, recoverable)
   and the staged spool file.
 - **The one live probe (D4, outside this suite):** a review round that can
-  reach the box may run one throwaway-draft probe as the mcp user — draft
+  reach the box may run one throwaway-draft probe as the mcp user; draft
   create with two staged attachments, verify the created envelope and the
   uploads via `messages get <draft-id>`, then `mail drafts delete <draft-id>
   --yes` (Forever-class cleanup needs `--yes`; without it the CLI refuses

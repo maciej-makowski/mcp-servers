@@ -298,7 +298,7 @@ def test_proton_mail_schema_send_attach_param():
     for needle in (
         "send",
         "/srv/mcp_files/send",
-        "209715200",
+        "209,715,200",
         "a plain send",
         "shape refusal",
     ):

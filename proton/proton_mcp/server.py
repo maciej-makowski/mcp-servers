@@ -114,14 +114,14 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Spool paths to attach (send). Every path must resolve under "
+                    "Spool paths to attach. Every path must resolve under "
                     "/srv/mcp_files/send and exist as a regular file; the total "
-                    "size across one call is capped at 209715200 bytes. The sent "
+                    "size across one call is capped at 209,715,200 bytes. The sent "
                     "attachment is named after the staged file's basename; the "
-                    "MIME type follows the extension. Stage files 0644, named as "
-                    "the attachment should read. Absent or an explicit empty list: "
-                    "a plain send. Any present non-list value (a stringified path, "
-                    "a boolean, a number) is a shape refusal, never a plain send"
+                    "MIME type follows the extension. Absent or an explicit empty "
+                    "list: a plain send. Any present non-list value (a stringified "
+                    "path, a boolean, a number) is a shape refusal, never a plain "
+                    "send."
                 ),
             },
             "refs": {

@@ -157,7 +157,7 @@ MAX_ATTACH_TOTAL_BYTES = 209_715_200  # 200 MiB (D3, against MemoryMax=384M)
 def _attach_shape_error(attach) -> str | None:
     """Shape check at the boundary (the _refs_error lesson applied at send):
     'attach' must be a list whose items are all non-empty strings. Booleans
-    and integers are refused, never stringified — a present non-list value
+    and integers are refused, never stringified; a present non-list value
     (a stringified path, a boolean, a number) is a shape refusal, never a
     plain send."""
     if not isinstance(attach, list):
