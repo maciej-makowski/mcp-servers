@@ -3,12 +3,6 @@
 Every result is JSON-serialisable. Ranged reads go through the TTL cache and
 the 429/5xx backoff; per-family failures are recorded for garmin_api_status
 and reported per family instead of aborting the whole query.
-
-With the local archive store configured in read_through mode
-(garmin-local-archive design §5.2), reads serve from the store first — the
-assembled responses keep the exact envelopes recorded in P4/P6, and any
-missing/stale piece is fetched live and written through. With the store off
-(the default) the live path below is the whole story, unchanged.
 """
 from __future__ import annotations
 
