@@ -12,7 +12,7 @@ import os
 import time
 from typing import Any, Callable
 
-from garmin_mcp import client, ranges
+from garmin_mcp import client, ranges, readpath
 from garmin_mcp.cache import CACHE_TTL_SECONDS, TTLCache, call_with_backoff
 
 CACHE = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
@@ -61,6 +61,13 @@ def _cached_call(key: tuple, family: str, fetch: Callable[[], Any]) -> Any:
 def recent_activities(limit: int = 20, since: str = "") -> dict[str, Any]:
     limit = max(1, min(int(limit), 100))
     since_iso = ranges.parse_date(since).isoformat() if since.strip() else ""
+    if readpath.read_through():
+        try:
+            return readpath.recent_activities(limit, since_iso)
+        except readpath.StoreError:
+            pass  # §4.1: store I/O error degrades this read to the live path
+        # a failed gate search lands here as the live tool's own failure
+        # would (§5.2): it raises after recording the family error
     data = _cached_call(
         ("recent_activities", limit, since_iso),
         "activities",
@@ -71,6 +78,11 @@ def recent_activities(limit: int = 20, since: str = "") -> dict[str, Any]:
 
 def activity(activity_id: str) -> dict[str, Any]:
     aid = _activity_id(activity_id)
+    if readpath.read_through():
+        try:
+            return readpath.activity(aid)
+        except readpath.StoreError:
+            pass  # degrade to the live path (§4.1)
     data = _cached_call(
         ("activity", aid), "activities", lambda: client.get_activity(aid)
     )
@@ -80,13 +92,27 @@ def activity(activity_id: str) -> dict[str, Any]:
 def activity_file(activity_id: str) -> dict[str, Any]:
     """Summarise the activity ZIP (size, sha256, type); never returns bytes."""
     aid = _activity_id(activity_id)
+    if readpath.read_through():
+        try:
+            stored = readpath.activity_zip_bytes(aid)
+            if stored is not None:
+                return _activity_file_envelope(aid, stored)
+        except readpath.StoreError:
+            pass  # degrade to the live path (§4.1)
     blob = _cached_call(
         ("activity_file", aid), "activities", lambda: client.download_activity(aid)
     )
     if isinstance(blob, str):
         blob = blob.encode()
+    if readpath.read_through():
+        readpath.write_through_zip(aid, blob)
+    return _activity_file_envelope(aid, blob)
+
+
+def _activity_file_envelope(activity_id: str, blob: bytes) -> dict[str, Any]:
+    """The exact live envelope (P4): size/sha/type/note, computed locally."""
     return {
-        "activity_id": aid,
+        "activity_id": activity_id,
         "size_bytes": len(blob),
         "sha256": hashlib.sha256(blob).hexdigest(),
         "content_type": "application/zip",
@@ -119,6 +145,13 @@ def daily(
         "families": {},
         "errors": {},
     }
+    if readpath.read_through():
+        # §5.2: assembled from the store + live fallback mix; the envelope is
+        # byte-identical with the live path's (P4/P6 shapes).
+        try:
+            return readpath.daily(start, end, requested, chunks_param)
+        except readpath.StoreError:
+            pass  # §4.1: degrade the whole query to the live path
     for family in requested:
         try:
             if family in ranges.RANGED_FAMILY_CAPS:
@@ -184,6 +217,11 @@ def trend(family: str, weeks: int = 8) -> dict[str, Any]:
             f"family {family!r} has no ranged endpoint; valid families: "
             f"{sorted(ranges.RANGED_FAMILY_CAPS)}"
         )
+    if readpath.read_through():
+        try:
+            return readpath.trend(family, weeks)
+        except readpath.StoreError:
+            pass  # degrade to the live path (§4.1)
     end = dt.date.today()
     start = end - dt.timedelta(days=weeks * 7 - 1)
     records: list[dict[str, Any]] = []
@@ -260,6 +298,11 @@ def _aggregate_weekly(
 
 def workout_usage(activity_id: str) -> dict[str, Any]:
     aid = _activity_id(activity_id)
+    if readpath.read_through():
+        try:
+            return readpath.workout_usage(aid)
+        except readpath.StoreError:
+            pass  # degrade to the live path (§4.1)
     data = _cached_call(
         ("workouts", aid), "activities", lambda: client.get_activity_workouts(aid)
     )
@@ -267,7 +310,12 @@ def workout_usage(activity_id: str) -> dict[str, Any]:
 
 
 def api_status() -> dict[str, Any]:
-    """Bearer-token validity/expiry, per-family last errors, cache stats."""
+    """Bearer-token validity/expiry, per-family last errors, cache stats.
+
+    With the archive store configured, gains the additive ``store`` block of
+    design §5.3 (staleness signalling, coverage, backfill progress, circuits,
+    off-host backup health); ``mode`` becomes ``store-read-through-v2`` when
+    reads serve through the store, unchanged otherwise."""
     key = os.environ.get(client.API_KEY_ENV_VAR, "").strip()
     status: dict[str, Any] = {
         "mode": "live-read-v1",
@@ -276,6 +324,11 @@ def api_status() -> dict[str, Any]:
         "families": client.family_errors(),
         "cache": CACHE.stats(),
     }
+    store_block = readpath.status_block()
+    if store_block is not None:
+        status["store"] = store_block
+        if store_block.get("mode") == "read_through" and store_block.get("enabled"):
+            status["mode"] = "store-read-through-v2"
     if not key:
         status["token"] = {"valid": False, "reason": f"{client.API_KEY_ENV_VAR} is not set"}
         return status

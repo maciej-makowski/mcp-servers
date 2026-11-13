@@ -9,23 +9,53 @@ connections — publishing stays host-loopback).
 
 Live reads via the official Garmin Connect Personal API: the bearer token is
 derived from GARMIN_API_KEY by the official client (24h token, auto-renewed
-in-process). No SQLite mirror and no sync job in v1 (Maciek's decision,
-2026-11-07).
+in-process).
+
+Local data archive (garmin-local-archive design, §4.1/§5.1): when
+GARMIN_STORE_DIR is set and GARMIN_STORE_MODE is live_only or read_through,
+the server runs the archive sync as a background task IN THIS PROCESS (a
+FastMCP lifespan task) and the read path may serve through the store. Mode
+off (the default) changes nothing: no sync task, live reads only.
 Audit log: $MCP_LOGS_DIR/garmin/ (args redacted, outputs captured).
 """
+import asyncio
 import contextlib
 import json
+import logging
 import os
 
 from mcp.server.fastmcp import FastMCP
 
-from garmin_mcp import audit, tools
+from garmin_mcp import audit, readpath, sync, tools
 
 DEFAULT_HTTP_PORT = 8017
 _S = "garmin"
 
+log = logging.getLogger("mcp.garmin")
 
-mcp = FastMCP("garmin")
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    """Start/stop the archive sync cadence task (§4.1). A store/sync startup
+    failure must never keep the tools from serving: everything here is
+    guarded, and an unconfigured store simply means no task."""
+    task = None
+    try:
+        readpath.init_from_env()
+        task = sync.start_cadence_task()
+    except Exception:  # noqa: BLE001 — server must serve regardless
+        log.exception("archive store/sync startup failed (tools serve live)")
+    try:
+        yield
+    finally:
+        sync.request_stop()
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+
+mcp = FastMCP("garmin", lifespan=_lifespan)
 
 
 @mcp.tool()

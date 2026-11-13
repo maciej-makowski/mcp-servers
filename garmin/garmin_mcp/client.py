@@ -167,3 +167,79 @@ def fetch_perday(family: str, day: dt.date) -> Any:
     if family == "heart_rate":
         return c.get_daily_heart_rate(day)
     raise ValueError(f"unknown per-day family {family!r}")
+
+
+# --- archive-only dispatch (garmin-local-archive design §2.1) ----------------
+#
+# The archive sync (garmin_mcp.sync) and the store read path
+# (garmin_mcp.readpath) reach every family the Personal API publishes, not
+# just the ones the seven tools expose. These call sites stay module-level so
+# tests can monkeypatch them (house convention); no existing tool dispatch
+# changes.
+
+_ARCHIVE_RANGED_WRAPPERS: dict[str, str] = {
+    "stress": "get_daily_stress",
+    "steps": "get_daily_steps",
+    "hydration": "get_daily_hydration",
+    "weight": "get_weight_measurements",
+    "weight_goals": "get_effective_weight_goals",
+    "sleep": "get_daily_sleep_summaries",
+    "body_battery": "get_daily_body_battery",
+    "daily": "get_daily_summaries",
+    "hrv": "get_daily_hrv_summaries",
+    "wellness_activities": "get_wellness_activity_summaries",
+}
+
+_ARCHIVE_PERDAY_WRAPPERS: dict[str, str] = {
+    "sleep_detail": "get_daily_sleep",
+    "hrv_detail": "get_daily_hrv",
+    "nutrition": "get_daily_food_logs",
+    "spo2": "get_daily_spo2",
+    "fitness_age": "get_fitness_age",
+    "heart_rate": "get_daily_heart_rate",
+    "menstrual_summary": "get_menstrual_cycle_summary",
+    "menstrual_day_view": "get_menstrual_cycle_day_view",
+}
+
+
+def search_activities_page(start: int, limit: int) -> Any:
+    """One raw search page at an arbitrary offset (sync paging, §4.2)."""
+    return api_client().search_activities(start=start, limit=limit)
+
+
+def fetch_ranged_archive(family: str, start: dt.date, end: dt.date) -> Any:
+    """Dispatch one ranged ARCHIVE family call (the 11 families of §2.1)."""
+    c = api_client()
+    wrapper = _ARCHIVE_RANGED_WRAPPERS.get(family)
+    if wrapper is not None:
+        if family == "body_battery":
+            return c.get_daily_body_battery(start, end)
+        return getattr(c, wrapper)(start, end)
+    if family == "weight_all":
+        # No official wrapper (P5): reached via the generic escape hatch.
+        return c.get(f"/weight-service/weight/all/{start}/{end}")
+    raise ValueError(f"unknown ranged archive family {family!r}")
+
+
+def fetch_perday_archive(family: str, day: dt.date) -> Any:
+    """Dispatch one per-day ARCHIVE family call (the 8 families of §2.1)."""
+    c = api_client()
+    wrapper = _ARCHIVE_PERDAY_WRAPPERS.get(family)
+    if wrapper is None:
+        raise ValueError(f"unknown per-day archive family {family!r}")
+    if family == "menstrual_day_view":
+        return c.get_menstrual_cycle_day_view(day, day)
+    return getattr(c, wrapper)(day)
+
+
+def fetch_point(name: str) -> Any:
+    """Dispatch one of the three point reads (no date; §2.1)."""
+    c = api_client()
+    if name == "profile_settings":
+        return c.get_user_profile_settings()
+    if name == "hr_zones":
+        return c.get_heart_rate_zones()
+    if name == "legacy_daily":
+        # No official wrapper (P5): reached via the generic escape hatch.
+        return c.get("/usersummary-service/usersummary/daily")
+    raise ValueError(f"unknown point read {name!r}")
