@@ -43,6 +43,8 @@ from .photos import PHOTOS_TOOL  # noqa: F401  (re-exported)
 
 __all__ = [
     "DEFAULT_ATTACHMENT_DEST_DIR",
+    "ATTACH_SPOOL_ROOT",
+    "MAX_ATTACH_TOTAL_BYTES",
     "DEFAULT_BULK_LIMIT",
     "NEXT_STEP",
     "DRY_RUN_FAILED_NEXT_STEP",
@@ -57,6 +59,9 @@ __all__ = [
     "_dry_run_envelope",
     "_affected_count",
     "_refs_error",
+    "_attach_shape_error",
+    "_attach_gate",
+    "_attach_files_error",
     "_BaseTool",
     "MailTool",
     "CalendarTool",
@@ -139,6 +144,63 @@ def _chmod_0644(dest_dir: str, names: list[str]) -> None:
             os.chmod(os.path.join(dest_dir, name), 0o644)
         except OSError:
             pass
+
+
+# --- outgoing attachments: the send branch's gate and cap (D2, D3, D8) ------
+#
+# Both constants are module globals read at call time, so tests can point
+# them at tmp paths without touching the CLI runner.
+ATTACH_SPOOL_ROOT = Path("/srv/mcp_files/send")
+MAX_ATTACH_TOTAL_BYTES = 209_715_200  # 200 MiB (D3, against MemoryMax=384M)
+
+
+def _attach_shape_error(attach) -> str | None:
+    """Shape check at the boundary (the _refs_error lesson applied at send):
+    'attach' must be a list whose items are all non-empty strings. Booleans
+    and integers are refused, never stringified; a present non-list value
+    (a stringified path, a boolean, a number) is a shape refusal, never a
+    plain send."""
+    if not isinstance(attach, list):
+        return f"'attach' must be a list of spool paths, got {type(attach).__name__}"
+    bad = [a for a in attach if not isinstance(a, str) or not a]
+    if bad:
+        return "'attach' items must be non-empty strings, got: " + ", ".join(
+            f"{type(a).__name__}" for a in bad[:3]
+        )
+    return None
+
+
+def _attach_gate(attach: list[str]) -> tuple[list[str], str | None]:
+    """Mirror of the google drive_upload gate: resolve both sides, refuse
+    anything not equal to or under the spool root. Symlinks resolve, so a
+    link pointing outside the root is refused by its target; a `..`
+    traversal string is refused by its resolved form. Resolution itself
+    failing (NUL bytes and other invalid path encodings) refuses with an
+    invalid-path wording; overlong names resolve non-strict and reach the
+    existence check instead."""
+    root = ATTACH_SPOOL_ROOT.resolve()
+    resolved: list[str] = []
+    for raw in attach:
+        try:
+            candidate = Path(raw).resolve()
+        except (OSError, ValueError):
+            return [], f"invalid attachment path: {raw!r}"
+        if candidate != root and root not in candidate.parents:
+            return [], f"'attach' paths must live under {ATTACH_SPOOL_ROOT} (got {raw!r})"
+        resolved.append(str(candidate))
+    return resolved, None
+
+
+def _attach_files_error(paths: list[str]) -> str | None:
+    """Regular-file check, post-gate (the drive-upload gate's is_file step):
+    a missing file is refused with the drive-upload wording; a directory
+    (the spool root included) is not a regular file."""
+    for p in paths:
+        if not os.path.isfile(p):
+            if os.path.exists(p):
+                return f"not a regular file: {p}"
+            return f"local file not found: {p}"
+    return None
 
 
 class MailTool(_BaseTool):
@@ -296,9 +358,43 @@ class MailTool(_BaseTool):
             to, subject, body = params.get("to"), params.get("subject"), params.get("body")
             if not to or subject is None:
                 return self._validation_error("send requires 'to' and 'subject'")
-            stdin_text = body if body is not None else ""
-            args = ["mail", "messages", "send", "--to", str(to), "--subject", str(subject)]
-            return self._run(args, dry_run=dry_run, stdin_text=stdin_text)
+            if not isinstance(body, str) or not body:
+                return self._validation_error(
+                    "send requires a non-empty 'body' (piped over stdin)"
+                )
+            timeout = None
+            paths: list[str] = []
+            if "attach" in params:
+                # Presence-keyed: only the key's presence widens the send, so
+                # falsy junk cannot degrade to a plain send; absent key and an
+                # explicit empty list are the two plain-send forms.
+                err = _attach_shape_error(params["attach"])
+                if err:
+                    return self._validation_error(f"send: {err}")
+                paths, err = _attach_gate(params["attach"])  # resolve + contain (D2)
+                if err:
+                    return self._validation_error(f"send: {err}")
+                err = _attach_files_error(paths)  # regular files, post-gate (D8)
+                if err:
+                    return self._validation_error(f"send: {err}")
+                try:
+                    total = sum(os.path.getsize(p) for p in paths)
+                except OSError as exc:  # vanished between isfile and stat
+                    return self._validation_error(
+                        f"send: attachment vanished during validation: {exc}"
+                    )
+                if total > MAX_ATTACH_TOTAL_BYTES:  # D3: 209_715_200
+                    return self._validation_error(
+                        f"send: attachments total {total} bytes exceeds the "
+                        f"{MAX_ATTACH_TOTAL_BYTES}-byte cap"
+                    )
+                timeout = 300 if paths else None  # D6 (an empty list is a plain send)
+            args = [
+                "mail", "messages", "send",
+                "--to", str(to), "--subject", str(subject), "--body", "-",
+            ]
+            args += [f"--attach={p}" for p in paths]
+            return self._run(args, dry_run=dry_run, stdin_text=body, timeout=timeout)
 
         # Bulk actions: explicit refs OR a filter scope, never both.
         refs = params.get("refs")

@@ -64,7 +64,7 @@ Log in once, user-only (never automate this — password + 2FA):
 | `proton_drive` | `list`, `get`, `download` | `upload`, `trash` |
 | `proton_photos` | `list`, `albums`, `download` | `trash`, `delete`, `favorite`, `unfavorite` |
 
-Every call takes `{"action": ..., "params": {...}}`. `download` is a read but writes locally — only into a caller-named `dest_dir`.
+Every call takes `{"action": ..., "params": {...}}`. `download` is a read but writes locally — only into a caller-named `dest_dir`. Mail `send` accepts an optional `attach` list of paths staged under `/srv/mcp_files/send` at 0644, each named as the attachment should read: every path must resolve under the send dir and exist as a regular file, the total attachment bytes across one call are capped at 200 MiB, and anything outside the send dir is refused before the CLI runs.
 
 ### Photos (`proton_photos`)
 
@@ -99,7 +99,7 @@ Rails enforced by the wrapper on every bulk action:
 1. Call the gated action with default `confirm=false`:
 
    ```json
-   {"action": "send", "params": {"to": "x@example.com", "subject": "Hi", "body": "hello"}}
+   {"action": "send", "params": {"to": "x@example.com", "subject": "Hi", "body": "hello", "attach": ["/srv/mcp_files/send/report.pdf"]}}
    ```
 
    → the CLI runs with `--dry-run`; response: `{"applied": false, "dry_run": true, "preview": {...}, "next_step": "Nothing changed. Ask user to approve, then call again with confirm=true."}`

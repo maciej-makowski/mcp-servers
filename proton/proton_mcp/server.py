@@ -49,6 +49,9 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "Attachment list/download reads for single messages and whole "
             "threads: downloads land in the spool receive dir by default and "
             "are chmod 644 for agent read-back. "
+            "send accepts an optional `attach` list of spool send-dir paths "
+            "(staged 0644), total attachment bytes capped at 200 MiB, paths "
+            "outside /srv/mcp_files/send refused. "
             + GATING_DOC
         ),
         "reads": (
@@ -103,7 +106,24 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             },
             "to": {"type": "string", "description": "Recipient address (send)"},
             "subject": {"type": "string", "description": "Subject line (send)"},
-            "body": {"type": "string", "description": "Body text, piped over stdin (send)"},
+            "body": {
+                "type": "string",
+                "description": "Body text, required, piped over stdin (send)",
+            },
+            "attach": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Spool paths to attach. Every path must resolve under "
+                    "/srv/mcp_files/send and exist as a regular file; the total "
+                    "size across one call is capped at 209,715,200 bytes. The sent "
+                    "attachment is named after the staged file's basename; the "
+                    "MIME type follows the extension. Absent or an explicit empty "
+                    "list: a plain send. Any present non-list value (a stringified "
+                    "path, a boolean, a number) is a shape refusal, never a plain "
+                    "send."
+                ),
+            },
             "refs": {
                 "type": "array",
                 "items": {"type": "string"},

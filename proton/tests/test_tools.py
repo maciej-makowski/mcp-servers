@@ -1143,3 +1143,338 @@ def test_attachments_download_dest_dir_sweep(rec, tmp_dest):
         expected = params.get("dest_dir") or str(tmp_dest)
         assert rec["argv"][i + 1] == expected
         assert "--dest" not in tail_without_globals(rec["argv"])
+
+
+# --- send with attachments (design §5 tests 1-12 and 14; test 13 lives in
+# test_mcp_tools.py) ---
+#
+# All hermetic: monkeypatched runner, no network, no real Proton calls. The
+# spool gate root and the size cap are repointed at tmp paths, so no test
+# touches /srv/mcp_files/send and no test needs a 200 MiB fixture.
+
+
+@pytest.fixture
+def spool(monkeypatch, tmp_path):
+    """Point the attach gate's spool root at a tmp dir (the module constants
+    are read at call time, so monkeypatching works)."""
+    root = tmp_path / "send"
+    root.mkdir()
+    monkeypatch.setattr(tools, "ATTACH_SPOOL_ROOT", root)
+    return root
+
+
+def _staged(root: Path, name: str, size: int = 4) -> Path:
+    f = root / name
+    f.write_bytes(b"x" * size)
+    return f
+
+
+def _sent_payload() -> dict:
+    """The CLI's real-send JSON result (fact 6's Create shape, sent side)."""
+    return {
+        "action": "sent", "count": 1, "dry_run": False,
+        "kind": "message", "name": "Hi", "ids": ["m123"],
+    }
+
+
+def _spy_on_runner(monkeypatch, seen: list):
+    """Wrap runner.run recording the timeout it received (the sibling spec's
+    seam-spy pattern)."""
+    real_run = runner.run
+
+    def spy_run(args, stdin_text=None, timeout=None, dry_run=False):
+        seen.append(timeout)
+        if timeout is None:
+            return real_run(args, stdin_text=stdin_text, dry_run=dry_run)
+        return real_run(args, stdin_text=stdin_text, dry_run=dry_run, timeout=timeout)
+
+    monkeypatch.setattr(runner, "run", spy_run)
+
+
+def test_send_plain_argv_carries_body_dash(rec):
+    """Test 1: exact argv; the body rides stdin via `--body -`. The shipped
+    branch carried no --body flag at all, and the CLI reads stdin only when
+    the flag value is exactly `-`, so every send through the MCP exited 1
+    with 'A body is required.'; this is that defect's regression test."""
+    rec["proc"] = proc_json(_sent_payload())
+    r = tools.MAIL_TOOL.dispatch(
+        "send", {"to": "x@y.z", "subject": "Hi", "body": "secret-body"}, confirm=True
+    )
+    assert tail_without_globals(rec["argv"]) == [
+        "mail", "messages", "send", "--to", "x@y.z", "--subject", "Hi", "--body", "-",
+    ]
+    assert rec["input"] == "secret-body"
+    assert r["success"] is True and r["applied"] is True
+
+
+def test_send_attach_argv_shape(rec, spool):
+    """Test 2: one staged file; the argv ends with `--attach=<resolved path>`
+    after the body flag; no positional elements anywhere (the equals form
+    binds each value at the token level)."""
+    f = _staged(spool, "report.pdf")
+    rec["proc"] = proc_json(_sent_payload())
+    tools.MAIL_TOOL.dispatch(
+        "send", {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": [str(f)]},
+        confirm=True,
+    )
+    args = tail_without_globals(rec["argv"])
+    assert args == [
+        "mail", "messages", "send", "--to", "x@y.z", "--subject", "Hi",
+        "--body", "-", f"--attach={f.resolve()}",
+    ]
+    assert rec["input"] == "b"
+
+
+def test_send_attach_multiple_paths_order(rec, spool):
+    """Test 3: two files; both `--attach=` flags present, in parameter
+    order."""
+    a = _staged(spool, "a.txt")
+    b = _staged(spool, "b.txt")
+    rec["proc"] = proc_json(_sent_payload())
+    tools.MAIL_TOOL.dispatch(
+        "send",
+        {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": [str(a), str(b)]},
+        confirm=True,
+    )
+    args = tail_without_globals(rec["argv"])
+    assert f"--attach={a.resolve()}" in args
+    assert f"--attach={b.resolve()}" in args
+    assert args.index(f"--attach={a.resolve()}") < args.index(f"--attach={b.resolve()}")
+
+
+def test_send_empty_attach_list_is_plain_send(rec, spool, monkeypatch):
+    """Test 4: `attach: []` emits no --attach flags and keeps the default
+    timeout; the 300 s budget binds to paths, not to the branch."""
+    seen: list = []
+    _spy_on_runner(monkeypatch, seen)
+    rec["proc"] = proc_json(_sent_payload())
+    tools.MAIL_TOOL.dispatch(
+        "send", {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": []},
+        confirm=True,
+    )
+    args = tail_without_globals(rec["argv"])
+    assert not [a for a in args if a.startswith("--attach")]
+    assert args == [
+        "mail", "messages", "send", "--to", "x@y.z", "--subject", "Hi", "--body", "-",
+    ]
+    assert seen == [None]
+
+
+def test_send_attach_containment_refusals(rec, spool, tmp_path):
+    """Test 5: a path under a tmp dir outside the root; a `..` traversal
+    string; a symlink inside the root pointing outside; each a structured
+    validation error naming the path. The CLI never runs."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_file = outside / "f.txt"
+    outside_file.write_text("x")
+    link = spool / "link.txt"
+    link.symlink_to(outside_file)  # inside the root, target outside
+    for raw in (str(outside_file), f"{spool}/../f.txt", str(link)):
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch(
+            "send",
+            {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": [raw]},
+            confirm=True,
+        )
+        assert r["success"] is False, raw
+        assert r["validation"] is True, raw
+        assert "must live under" in r["error"], (raw, r["error"])
+        assert raw in r["error"], raw  # the offending path is named
+        assert r["exit_code"] is None and r["auth_required"] is False, raw
+        assert rec["argv"] == [], raw
+
+
+def test_send_attach_existence_refusals(rec, spool):
+    """Test 6: a missing file refuses with the drive-upload wording ('local
+    file not found'); the spool root itself and a directory refuse as 'not a
+    regular file'."""
+    sub = spool / "subdir"
+    sub.mkdir()
+    for raw, needle in (
+        (str(spool / "missing.txt"), "local file not found"),
+        (str(spool), "not a regular file"),
+        (str(sub), "not a regular file"),
+    ):
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch(
+            "send",
+            {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": [raw]},
+            confirm=True,
+        )
+        assert r["success"] is False, raw
+        assert r["validation"] is True, raw
+        assert needle in r["error"], (raw, r["error"])
+        assert rec["argv"] == [], raw
+
+
+def test_send_attach_cap_refusal_and_boundary(rec, spool, monkeypatch):
+    """Test 7 (the cap monkeypatched small): one byte over refuses with the
+    total and the cap named; exactly at the cap passes to argv."""
+    monkeypatch.setattr(tools, "MAX_ATTACH_TOTAL_BYTES", 10)
+    rec["proc"] = proc_json(_sent_payload())
+    over = _staged(spool, "over.bin", 11)
+    r = tools.MAIL_TOOL.dispatch(
+        "send",
+        {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": [str(over)]},
+        confirm=True,
+    )
+    assert r["success"] is False and r["validation"] is True
+    assert "11 bytes exceeds the 10-byte cap" in r["error"]
+    assert rec["argv"] == []  # the CLI never runs
+
+    at = _staged(spool, "at.bin", 10)  # exactly at the cap: passes
+    tools.MAIL_TOOL.dispatch(
+        "send",
+        {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": [str(at)]},
+        confirm=True,
+    )
+    assert f"--attach={at.resolve()}" in tail_without_globals(rec["argv"])
+
+
+def test_send_body_required_validation(rec):
+    """Test 8: body absent, empty string, and non-string each refuse as
+    structured validation errors; the shipped observable contract (a send
+    without a body fails) preserved, moved in front of the CLI."""
+    for body in (None, "", 5):
+        params = {"to": "x@y.z", "subject": "Hi"}
+        if body is not None:
+            params["body"] = body
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch("send", params, confirm=True)
+        assert r["success"] is False, body
+        assert r["validation"] is True, body
+        assert "non-empty 'body'" in r["error"], body
+        assert rec["argv"] == [], body
+
+
+def test_send_shape_error_on_bare_string_attach(rec, spool):
+    """Test 9: `attach: \"<path>\"` refuses; a stringified path must never
+    become one argv element (the _refs_error lesson at the boundary)."""
+    f = _staged(spool, "real.pdf")
+    r = tools.MAIL_TOOL.dispatch(
+        "send", {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": str(f)},
+        confirm=True,
+    )
+    assert r["success"] is False and r["validation"] is True
+    assert "'attach' must be a list" in r["error"]
+    assert "str" in r["error"]
+    assert rec["argv"] == []
+
+
+def test_send_attach_timeout_seam(rec, spool, monkeypatch):
+    """Test 10: an attach-carrying send passes timeout=300 to the runner; a
+    plain send passes no timeout (the 60 s default intact)."""
+    seen: list = []
+    _spy_on_runner(monkeypatch, seen)
+    rec["proc"] = proc_json(_sent_payload())
+    f = _staged(spool, "big.bin")
+    tools.MAIL_TOOL.dispatch(
+        "send", {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": [str(f)]},
+        confirm=True,
+    )
+    assert seen[-1] == 300
+    assert rec["timeout"] == 300
+
+    rec["timeout"] = None
+    tools.MAIL_TOOL.dispatch(
+        "send", {"to": "x@y.z", "subject": "Hi", "body": "b"}, confirm=True
+    )
+    assert seen[-1] is None
+    assert rec["timeout"] == 60  # the runner's own default intact
+
+
+def test_send_resolved_path_in_argv(rec, spool):
+    """Test 11: a symlink inside the root pointing deeper inside resolves, and
+    the argv carries the resolved target; the path the CLI will actually
+    read."""
+    sub = spool / "sub"
+    sub.mkdir()
+    actual = sub / "actual.pdf"
+    actual.write_bytes(b"x")
+    link = spool / "link.pdf"
+    link.symlink_to(actual)
+    rec["proc"] = proc_json(_sent_payload())
+    tools.MAIL_TOOL.dispatch(
+        "send", {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": [str(link)]},
+        confirm=True,
+    )
+    assert tail_without_globals(rec["argv"])[-1] == f"--attach={actual.resolve()}"
+
+
+def _send_sweep_cases(spool: Path) -> list[dict]:
+    """Every send argv variant exercised by this module's send tests."""
+    plain = {"to": "x@y.z", "subject": "Hi", "body": "b"}
+    return [
+        plain,
+        dict(plain, attach=[str(_staged(spool, "one.pdf"))]),
+        dict(plain, attach=[str(_staged(spool, "two-a.pdf")), str(_staged(spool, "two-b.pdf"))]),
+        dict(plain, attach=[]),
+    ]
+
+
+def test_send_forbidden_flags_sweep(rec, spool):
+    """Test 12: no send argv in any case carries the unwired compose flags
+    (D7) or a bare `--attach` element (attach values ride the equals form)."""
+    rec["proc"] = proc_json(_sent_payload())
+    forbidden = [
+        "--cc", "--bcc", "--attach-inline", "--html", "--eml", "--from",
+        "--no-signature", "--request-receipt", "--send-at", "--expires",
+    ]
+    for params in _send_sweep_cases(spool):
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch("send", params, confirm=True)
+        assert r["success"] is True, (params, r)
+        args = rec["argv"]
+        for flag in forbidden:
+            assert flag not in args, (params, flag)
+        assert not [a for a in args if a.startswith("--eo-password")], params
+        assert "--attach" not in args, params
+
+
+def test_send_validation_order_pinning(rec, spool, monkeypatch):
+    """Test 14: calls tripping adjacent chain stages together pin the order
+    (the cap monkeypatched small, test 7's pattern): containment wins over
+    existence; existence wins over the cap; shape wins over everything."""
+    monkeypatch.setattr(tools, "MAX_ATTACH_TOTAL_BYTES", 5)
+    big = _staged(spool, "big.bin", 9)  # over the small cap
+    outside = spool.parent / "outside"
+    outside.mkdir(exist_ok=True)
+    outside_file = outside / "f.txt"
+    outside_file.write_text("x")
+
+    # Containment + existence: an out-of-root path plus a missing in-root
+    # path; the containment wording wins.
+    r = tools.MAIL_TOOL.dispatch(
+        "send",
+        {"to": "x@y.z", "subject": "Hi", "body": "b",
+         "attach": [str(spool / "missing.txt"), str(outside_file)]},
+        confirm=True,
+    )
+    assert r["validation"] is True
+    assert "must live under" in r["error"]
+    assert "local file not found" not in r["error"]
+    assert rec["argv"] == []
+
+    # Existence + cap: a missing in-root path plus an over-cap file; the
+    # existence wording wins.
+    r = tools.MAIL_TOOL.dispatch(
+        "send",
+        {"to": "x@y.z", "subject": "Hi", "body": "b",
+         "attach": [str(spool / "missing.txt"), str(big)]},
+        confirm=True,
+    )
+    assert r["validation"] is True
+    assert "local file not found" in r["error"]
+    assert "exceeds" not in r["error"]
+    assert rec["argv"] == []
+
+    # Shape + everything: a present non-list attach wins over every later
+    # stage, to/subject/body being valid.
+    r = tools.MAIL_TOOL.dispatch(
+        "send", {"to": "x@y.z", "subject": "Hi", "body": "b", "attach": str(big)},
+        confirm=True,
+    )
+    assert r["validation"] is True
+    assert "'attach' must be a list" in r["error"]
+    assert rec["argv"] == []

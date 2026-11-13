@@ -278,3 +278,35 @@ def test_runner_template_prepends_global_flags(rec, tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", stripping_run)
     with pytest.raises(RuntimeError, match="dry-run argv check"):
         tools.MAIL_TOOL.dispatch("trash", {"refs": ["1"], "confirm": False})
+
+
+def test_proton_mail_schema_send_attach_param():
+    """Design test 13: the action enum is unchanged by the attach increment;
+    `attach` sits in `params` properties as an array of strings with the
+    documented description; `confirm` remains a top-level argument of the
+    gated tool (default false, never required)."""
+    mail = srv.INPUT_SCHEMAS["proton_mail"]["properties"]["action"]["enum"]
+    assert set(mail) == {"status", "list", "search", "get",
+                         "attachments_list", "attachments_download",
+                         "conversation_attachments_list",
+                         "conversation_attachments_download",
+                         "send", "move", "label", "unlabel", "mark", "trash"}
+    props = srv.INPUT_SCHEMAS["proton_mail"]["properties"]["params"]["properties"]
+    attach = props["attach"]
+    assert attach["type"] == "array"
+    assert attach["items"] == {"type": "string"}
+    for needle in (
+        "send",
+        "/srv/mcp_files/send",
+        "209,715,200",
+        "a plain send",
+        "shape refusal",
+    ):
+        assert needle in attach["description"], needle
+    assert props["body"]["description"] == "Body text, required, piped over stdin (send)"
+    spec = srv.TOOL_SPECS["proton_mail"]
+    assert "`attach` list of spool send-dir paths" in spec["description"]
+    schema = srv.INPUT_SCHEMAS["proton_mail"]
+    assert schema["properties"]["confirm"]["default"] is False
+    assert "confirm" in schema["properties"]  # top-level argument of the gated tool
+    assert "confirm" not in schema["required"]
