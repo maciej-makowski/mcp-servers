@@ -128,7 +128,7 @@ class TestHttpAppEndToEnd:
         assert r.status_code == 200
         assert r.json()["result"]["serverInfo"]["name"] == "strava-mcp"
 
-    def test_tool_list_shows_three_tools(self, client_fx):
+    def test_tool_list_shows_four_tools(self, client_fx):
         r = client_fx.post(
             "/mcp",
             headers={"Authorization": "Bearer test-bearer"},
@@ -141,4 +141,4 @@ class TestHttpAppEndToEnd:
         )
         assert r.status_code == 200
         names = [t["name"] for t in r.json()["result"]["tools"]]
-        assert names == ["strava_athlete", "strava_activities", "strava_rate_status"]
+        assert names == ["strava_athlete", "strava_activities", "strava_rate_status", "strava_sync"]

@@ -27,7 +27,11 @@ import httpx
 TOKEN_PATH = "/app/data/token.json"
 TOKEN_URL = "https://www.strava.com/oauth/token"
 AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
-SCOPES = "read,profile:read_all,activity:read_all"  # D3
+# D3 default; STRAVA_OAUTH_SCOPES overrides it (the attended read_all
+# re-authorization sets the four-scope string in the env file, A1).
+SCOPES = os.environ.get(
+    "STRAVA_OAUTH_SCOPES", "read,profile:read_all,activity:read_all"
+)  # D3 default, A1 override
 TOKEN_TIMEOUT_S = 30.0
 
 
