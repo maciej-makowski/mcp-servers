@@ -83,7 +83,7 @@ def test_calendar_schema_has_no_mail_filter():
 def rec(monkeypatch, tmp_path):
     """Recorder over subprocess.run with a fake PROTON_BIN (same shape as test_tools)."""
     fake_bin = tmp_path / "proton"
-    fake_bin.write_text("#!/bin/sh\\ntrue\\n")
+    fake_bin.write_text("#!/bin/sh\ntrue\n")
     monkeypatch.setattr(runner, "PROTON_BIN", fake_bin)
     calls = {"argv": []}
 
