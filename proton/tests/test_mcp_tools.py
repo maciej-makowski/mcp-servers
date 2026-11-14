@@ -25,7 +25,10 @@ def test_action_enums_mirror_tool_layer():
                          "attachments_list", "attachments_download",
                          "conversation_attachments_list",
                          "conversation_attachments_download",
-                         "send", "move", "label", "unlabel", "mark", "trash"}
+                         "drafts_list", "drafts_get", "drafts_create",
+                         "reply_draft",
+                         "send", "move", "label", "unlabel", "mark", "trash",
+                         "drafts_send"}
     cal = srv.INPUT_SCHEMAS["proton_calendar"]["properties"]["action"]["enum"]
     assert set(cal) == {"calendars", "events_list", "events_get",
                         "events_create", "events_delete"}
@@ -80,7 +83,7 @@ def test_calendar_schema_has_no_mail_filter():
 def rec(monkeypatch, tmp_path):
     """Recorder over subprocess.run with a fake PROTON_BIN (same shape as test_tools)."""
     fake_bin = tmp_path / "proton"
-    fake_bin.write_text("#!/bin/sh\ntrue\n")
+    fake_bin.write_text("#!/bin/sh\\ntrue\\n")
     monkeypatch.setattr(runner, "PROTON_BIN", fake_bin)
     calls = {"argv": []}
 
@@ -216,7 +219,7 @@ def test_proton_mail_schema_carries_attachment_actions_and_params():
     ):
         assert props[key]["type"] == typ, key
     assert props["id"]["description"] == (
-        "Message or conversation reference (get and attachment actions)"
+        "Message, conversation or draft reference (get, attachment and drafts actions)"
     )
     spec = srv.TOOL_SPECS["proton_mail"]
     gated = set(spec["gated"])
@@ -281,16 +284,20 @@ def test_runner_template_prepends_global_flags(rec, tmp_path, monkeypatch):
 
 
 def test_proton_mail_schema_send_attach_param():
-    """Design test 13: the action enum is unchanged by the attach increment;
-    `attach` sits in `params` properties as an array of strings with the
-    documented description; `confirm` remains a top-level argument of the
-    gated tool (default false, never required)."""
+    """Design test 13: `attach` sits in `params` properties as an array of
+    strings with the documented description; `confirm` remains a top-level
+    argument of the gated tool (default false, never required). The enum
+    assertion grows with each increment (the drafts actions are test 20's
+    subject; this test keeps pinning the send-side set as a whole)."""
     mail = srv.INPUT_SCHEMAS["proton_mail"]["properties"]["action"]["enum"]
     assert set(mail) == {"status", "list", "search", "get",
                          "attachments_list", "attachments_download",
                          "conversation_attachments_list",
                          "conversation_attachments_download",
-                         "send", "move", "label", "unlabel", "mark", "trash"}
+                         "drafts_list", "drafts_get", "drafts_create",
+                         "reply_draft",
+                         "send", "move", "label", "unlabel", "mark", "trash",
+                         "drafts_send"}
     props = srv.INPUT_SCHEMAS["proton_mail"]["properties"]["params"]["properties"]
     attach = props["attach"]
     assert attach["type"] == "array"
@@ -303,10 +310,66 @@ def test_proton_mail_schema_send_attach_param():
         "shape refusal",
     ):
         assert needle in attach["description"], needle
-    assert props["body"]["description"] == "Body text, required, piped over stdin (send)"
+    assert props["body"]["description"] == (
+        "Body text, required, piped over stdin (send, drafts_create and reply_draft)"
+    )
     spec = srv.TOOL_SPECS["proton_mail"]
     assert "`attach` list of spool send-dir paths" in spec["description"]
     schema = srv.INPUT_SCHEMAS["proton_mail"]
     assert schema["properties"]["confirm"]["default"] is False
     assert "confirm" in schema["properties"]  # top-level argument of the gated tool
     assert "confirm" not in schema["required"]
+
+
+# --- drafts actions: schema (design §5 tests 20-21) -----------------------------
+
+
+def test_proton_mail_schema_carries_drafts_actions_and_params():
+    """Design test 20: the enum carries the five new actions; drafts_send
+    sits in `gated` (confirm covers it, default false); the four reads do
+    not; the six new params carry their documented types."""
+    mail = srv.INPUT_SCHEMAS["proton_mail"]["properties"]["action"]["enum"]
+    for action in (
+        "drafts_list", "drafts_get", "drafts_create", "reply_draft", "drafts_send",
+    ):
+        assert action in mail, action
+    spec = srv.TOOL_SPECS["proton_mail"]
+    gated = set(spec["gated"])
+    assert "drafts_send" in gated
+    for action in ("drafts_list", "drafts_get", "drafts_create", "reply_draft"):
+        assert action in spec["reads"]
+        assert action not in gated  # the four reads are never confirm-gated
+    # drafts_send's confirm coverage rides the standing schema: default false.
+    schema = srv.INPUT_SCHEMAS["proton_mail"]
+    assert schema["properties"]["confirm"]["default"] is False
+    assert "confirm" in schema["properties"]
+    assert "confirm" not in schema["required"]
+    props = schema["properties"]["params"]["properties"]
+    for key, typ in (
+        ("body_path", "string"),
+        ("everyone", "boolean"),
+        ("sort", "string"),
+        ("desc", "boolean"),
+        ("page", "integer"),
+        ("limit", "integer"),
+    ):
+        assert props[key]["type"] == typ, key
+    # The tool description names the workflow.
+    for needle in ("drafts_list", "drafts_get", "drafts_create", "reply_draft",
+                   "drafts_send", "send-dir gate"):
+        assert needle in spec["description"], needle
+
+
+def test_schema_string_updates_ridden():
+    """Design test 21: the two shipped schema-string assertions that §4's
+    widening touches are updated to the new strings in the same PR, and this
+    test pins the new literals: the `id` description (from
+    test_proton_mail_schema_carries_attachment_actions_and_params) and the
+    `body` description (from test_proton_mail_schema_send_attach_param)."""
+    props = srv.INPUT_SCHEMAS["proton_mail"]["properties"]["params"]["properties"]
+    assert props["id"]["description"] == (
+        "Message, conversation or draft reference (get, attachment and drafts actions)"
+    )
+    assert props["body"]["description"] == (
+        "Body text, required, piped over stdin (send, drafts_create and reply_draft)"
+    )
