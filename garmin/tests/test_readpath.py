@@ -469,9 +469,12 @@ def test_api_status_off_host_stale_alarm(tmp_path, clean_tools, fake):
     assert block["off_host"]["healthy"] is False
     assert "stale" in block["off_host"]["reason"]
     # a fresh, healthy file renders healthy with recomputed age_hours
+    # (last_upload is now-relative: a hardcoded date crosses the 30 h
+    # staleness window as the calendar advances and fails the test)
     status_path.write_text(json.dumps({
         "date": "2026-11-13", "off_host_healthy": True, "reason": "ok",
-        "last_upload": "2026-11-13T04:47:00+00:00",
+        "last_upload": (dt.datetime.now(dt.timezone.utc)
+                        - dt.timedelta(hours=5)).isoformat(),
         "newest_drive_item": "garmin-archive-2026-11-13.age", "age_hours": 5,
     }))
     block = readpath.status_block()
