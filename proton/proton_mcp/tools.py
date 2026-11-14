@@ -5,7 +5,10 @@ Gating rules (structural, enforced here):
   return a preview envelope; nothing is changed.
 - Gated actions with confirm=True run for real (no --dry-run).
 - Reads never get --dry-run. Downloads are reads: they write only into a
-  caller-named directory and touch no account state.
+  caller-named directory and touch no account state. The drafts actions
+  drafts_list/drafts_get/drafts_create/reply_draft are in the same class:
+  they touch only the Drafts folder (reversible, never delivered), so they
+  never carry --dry-run either; drafts_send is gated like send.
 - Bulk filter actions: default --limit 150 unless all=True or an explicit
   limit is given; all=True additionally requires confirm=True to apply.
 - Dry-run argv check: if a gated call requested --dry-run but the argv the
@@ -62,6 +65,8 @@ __all__ = [
     "_attach_shape_error",
     "_attach_gate",
     "_attach_files_error",
+    "_drafts_ref_error",
+    "_drafts_body_chain",
     "_BaseTool",
     "MailTool",
     "CalendarTool",
@@ -203,10 +208,99 @@ def _attach_files_error(paths: list[str]) -> str | None:
     return None
 
 
+# --- drafts actions: the shared ref check and the body chain (D8 order) ------
+#
+# The four ungated drafts actions validate their own shapes and never run the
+# CLI on a refusal; drafts_send reuses the same ref check behind the gate.
+
+
+def _drafts_ref_error(action: str, params: dict) -> str | None:
+    """The ref-taking drafts actions' id check (the download actions'
+    wording class): present, a string, non-empty. Lists, ints and booleans
+    are refused, never stringified (the _refs_error boundary lesson)."""
+    ref = params.get("id")
+    if not isinstance(ref, str) or not ref:
+        return f"{action} requires 'id' (a draft or message reference as a string)"
+    return None
+
+
+def _body_over_cap_message(action: str, size: int) -> str:
+    """The over-cap wording for the body gate, shared by the stat-side check
+    and the read-side re-check (the companion's D3 number and reasoning)."""
+    return (
+        f"{action}: body file size {size} bytes exceeds the "
+        f"{MAX_ATTACH_TOTAL_BYTES}-byte cap"
+    )
+
+
+def _drafts_body_chain(action: str, params: dict) -> tuple[str | None, str | None]:
+    """The composing actions' body chain, in D8 order: exclusivity first,
+    then the inline form, then the spool form through the shipped attach
+    machinery. Returns (stdin_text, error); error set means a structured
+    validation message and the CLI has not run.
+
+    The spool form (§3.4) reuses _attach_gate and _attach_files_error
+    unchanged, then stats and reads under one vanished-wording catch
+    spanning existence -> stat -> read. The read opens the path the gate
+    just resolved and reads from the opened handle (a retarget after the
+    open swaps nothing), re-checks the cap on the bytes it holds (a file
+    grown between the stat and the read refuses with the same over-cap
+    wording), refuses non-UTF-8 bytes (the runner's stdin is text), and
+    refuses a zero-byte file with the empty-body wording (the same D6
+    guarantee the inline branch enforces). The gate-to-open retarget window
+    stays disclosed, not engineered: the spool is the agent-authored send
+    dir on tmpfs (fact 16)."""
+    has_body = "body" in params
+    has_path = "body_path" in params
+    if has_body and has_path:
+        return None, f"{action}: pass exactly one of 'body' and 'body_path', got both"
+    if not has_body and not has_path:
+        return None, f"{action}: pass exactly one of 'body' and 'body_path', got neither"
+    if has_body:
+        body = params["body"]
+        if not isinstance(body, str) or not body:
+            return None, f"{action} requires a non-empty 'body' (piped over stdin)"
+        return body, None
+    raw = params["body_path"]
+    if not isinstance(raw, str) or not raw:
+        return None, (
+            f"{action}: 'body_path' must be a non-empty string, got {type(raw).__name__}"
+        )
+    paths, err = _attach_gate([raw])  # containment, unchanged (D2 reuse)
+    if err:
+        return None, f"{action}: {err}"
+    err = _attach_files_error(paths)  # regular file, post-gate
+    if err:
+        return None, f"{action}: {err}"
+    resolved = paths[0]
+    try:
+        size = os.path.getsize(resolved)
+    except OSError as exc:  # vanished between the existence check and the stat
+        return None, f"{action}: body file vanished during validation: {exc}"
+    if size > MAX_ATTACH_TOTAL_BYTES:
+        return None, _body_over_cap_message(action, size)
+    try:
+        with open(resolved, "rb") as fh:
+            held = fh.read()
+    except OSError as exc:  # vanished between the stat and the read
+        return None, f"{action}: body file vanished during validation: {exc}"
+    if len(held) > MAX_ATTACH_TOTAL_BYTES:  # grew between the stat and the read
+        return None, _body_over_cap_message(action, len(held))
+    try:
+        text = held.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, f"{action}: body file is not valid UTF-8 (the CLI's stdin is text)"
+    if not held:
+        return None, f"{action} requires a non-empty 'body' (piped over stdin)"
+    return text, None
+
+
 class MailTool(_BaseTool):
     """Actions on `proton mail`."""
 
-    GATED_ACTIONS = frozenset({"send", "move", "label", "unlabel", "mark", "trash"})
+    GATED_ACTIONS = frozenset(
+        {"send", "move", "label", "unlabel", "mark", "trash", "drafts_send"}
+    )
 
     def _read(self, action: str, params: dict) -> dict:
         if action == "status":
@@ -261,6 +355,85 @@ class MailTool(_BaseTool):
             return self._attachment_download(
                 action, ["mail", "conversations", "attachments", "download"], params
             )
+        if action == "drafts_list":
+            args = ["mail", "drafts", "list"]
+            sort = params.get("sort")
+            if sort is not None:
+                if sort not in ("time", "size"):
+                    return self._validation_error(
+                        f"'sort' must be 'time' or 'size', got {sort!r}"
+                    )
+                args += ["--sort", str(sort)]
+            if params.get("desc") is not None:
+                if not isinstance(params["desc"], bool):
+                    return self._validation_error(
+                        f"'desc' must be a boolean, got {type(params['desc']).__name__}"
+                    )
+                if params["desc"]:  # bare switch: a False value omits the flag
+                    args.append("--desc")
+            if params.get("limit") is not None:
+                err = _limit_error({"limit": params["limit"]})
+                if err:
+                    return self._validation_error(err)
+                args += ["--limit", str(params["limit"])]
+            page = params.get("page")
+            if page is not None:
+                if isinstance(page, bool) or not isinstance(page, int):
+                    return self._validation_error(
+                        f"'page' must be an integer, got {type(page).__name__}"
+                    )
+                args += ["--page", str(page)]
+            return self._run(args)
+        if action == "drafts_get":
+            # A draft is a message (the CLI has no `drafts get` verb); the
+            # ref is the wrapper's own data and sits after `--`, so
+            # dash-ids stay positionals.
+            err = _drafts_ref_error(action, params)
+            if err:
+                return self._validation_error(err)
+            return self._run(["mail", "messages", "get", "--", params["id"]])
+        if action == "drafts_create":
+            # Mirrors the send branch's presence checks (D6), with the string
+            # type check on subject the send branch lacks; a present empty
+            # subject passes to argv (the CLI does not require one).
+            to = params.get("to")
+            if not to:
+                return self._validation_error("drafts_create requires a non-empty 'to'")
+            subject = params.get("subject")
+            if subject is None or not isinstance(subject, str):
+                return self._validation_error(
+                    "drafts_create requires 'subject' (a string; it may be empty)"
+                )
+            stdin_text, err = _drafts_body_chain(action, params)
+            if err:
+                return self._validation_error(err)
+            args = [
+                "mail", "drafts", "create",
+                "--to", str(to), "--subject", str(subject), "--body", "-",
+            ]
+            return self._run(args, stdin_text=stdin_text)
+        if action == "reply_draft":
+            # Message-level reply saved as a draft: the id check first, then
+            # the everyone shape, then the body chain (D8's
+            # parameter-shape-first order, parity with drafts_create).
+            err = _drafts_ref_error(action, params)
+            if err:
+                return self._validation_error(err)
+            if "everyone" in params and not isinstance(params["everyone"], bool):
+                return self._validation_error(
+                    f"{action}: 'everyone' must be a boolean, "
+                    f"got {type(params['everyone']).__name__}"
+                )
+            stdin_text, err = _drafts_body_chain(action, params)
+            if err:
+                return self._validation_error(err)
+            args = ["mail", "messages", "reply", "--draft", "--body", "-"]
+            if params.get("everyone"):
+                args.append("--everyone")
+            # The ref comes last: flags first, then `--`, then positionals.
+            args.append("--")
+            args.append(params["id"])
+            return self._run(args, stdin_text=stdin_text)
         raise ValueError(f"unknown read action {action!r} for mail")
 
     def _attachment_list(self, action: str, head: list[str], params: dict) -> dict:
@@ -395,6 +568,18 @@ class MailTool(_BaseTool):
             ]
             args += [f"--attach={p}" for p in paths]
             return self._run(args, dry_run=dry_run, stdin_text=body, timeout=timeout)
+
+        if action == "drafts_send":
+            # Delivery of a stored draft: no CLI flags at all (its delivery
+            # flags are unwired, D7, and the draft already holds subject,
+            # body, and signature); the ref rides after `--` like every
+            # ref-taking action. The dry-run preview's data already carries
+            # the draft's own id (fact 6), so the preview is a concrete
+            # address confirmation. The runner's 60 s default stays (D9).
+            err = _drafts_ref_error(action, params)
+            if err:
+                return self._validation_error(err)
+            return self._run(["mail", "drafts", "send", "--", params["id"]], dry_run=dry_run)
 
         # Bulk actions: explicit refs OR a filter scope, never both.
         refs = params.get("refs")

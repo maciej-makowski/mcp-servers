@@ -59,12 +59,14 @@ Log in once, user-only (never automate this — password + 2FA):
 
 | Tool | Reads (run directly) | Gated (`confirm=true`) |
 |---|---|---|
-| `proton_mail` | `status`, `list`, `search`, `get`, `attachments_list`, `attachments_download`, `conversation_attachments_list`, `conversation_attachments_download` | `send`, `move`, `label`, `unlabel`, `mark`, `trash` |
+| `proton_mail` | `status`, `list`, `search`, `get`, `attachments_list`, `attachments_download`, `conversation_attachments_list`, `conversation_attachments_download`, `drafts_list`, `drafts_get`, `drafts_create`, `reply_draft` | `send`, `move`, `label`, `unlabel`, `mark`, `trash`, `drafts_send` |
 | `proton_calendar` | `calendars`, `events_list`, `events_get` | `events_create`, `events_delete` |
 | `proton_drive` | `list`, `get`, `download` | `upload`, `trash` |
 | `proton_photos` | `list`, `albums`, `download` | `trash`, `delete`, `favorite`, `unfavorite` |
 
 Every call takes `{"action": ..., "params": {...}}`. `download` is a read but writes locally — only into a caller-named `dest_dir`. Mail `send` accepts an optional `attach` list of paths staged under `/srv/mcp_files/send` at 0644, each named as the attachment should read: every path must resolve under the send dir and exist as a regular file, the total attachment bytes across one call are capped at 200 MiB, and anything outside the send dir is refused before the CLI runs.
+
+Draft workflow: `drafts_create` or `reply_draft` writes a draft (the body rides inline as `body`, or spool-staged as a `body_path` under `/srv/mcp_files/send`, which goes through the same containment gate and 200 MiB cap as the attach list, read by the wrapper and piped over stdin), `drafts_list` and `drafts_get` review the draft as stored, and the gated `drafts_send` delivers it after the confirm gate. `drafts_send`'s dry-run preview already names the draft's own id, so the preview is a concrete address confirmation before approval.
 
 ### Photos (`proton_photos`)
 

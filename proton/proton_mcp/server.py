@@ -52,6 +52,10 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "send accepts an optional `attach` list of spool send-dir paths "
             "(staged 0644), total attachment bytes capped at 200 MiB, paths "
             "outside /srv/mcp_files/send refused. "
+            "Draft workflow: reads drafts_list/drafts_get, compose via "
+            "drafts_create and reply_draft (saved as a draft), and the gated "
+            "drafts_send of a stored draft, with bodies inline or "
+            "spool-staged under the send-dir gate. "
             + GATING_DOC
         ),
         "reads": (
@@ -63,6 +67,10 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "attachments_download",
             "conversation_attachments_list",
             "conversation_attachments_download",
+            "drafts_list",
+            "drafts_get",
+            "drafts_create",
+            "reply_draft",
         ),
         "gated": tuple(sorted(tools.MAIL_TOOL.GATED_ACTIONS)),
         "filter": True,
@@ -70,7 +78,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "query": {"type": "string", "description": "Search query (search action)"},
             "id": {
                 "type": "string",
-                "description": "Message or conversation reference (get and attachment actions)",
+                "description": "Message, conversation or draft reference (get, attachment and drafts actions)",
             },
             "attachment": {
                 "type": "string",
@@ -108,7 +116,40 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "subject": {"type": "string", "description": "Subject line (send)"},
             "body": {
                 "type": "string",
-                "description": "Body text, required, piped over stdin (send)",
+                "description": "Body text, required, piped over stdin (send, drafts_create and reply_draft)",
+            },
+            "body_path": {
+                "type": "string",
+                "description": (
+                    "Spool path under /srv/mcp_files/send whose contents become the "
+                    "body (drafts_create and reply_draft): the wrapper reads the file "
+                    "and pipes it over stdin, under the same containment gate and "
+                    "200 MiB cap as the attach list. Exactly one of `body` and "
+                    "`body_path` must be present"
+                ),
+            },
+            "everyone": {
+                "type": "boolean",
+                "description": (
+                    "reply_draft: reply-all, CCing everyone who was on the parent "
+                    "minus your own address; default off"
+                ),
+            },
+            "sort": {
+                "type": "string",
+                "description": "drafts_list: order by time (default) or size",
+            },
+            "desc": {
+                "type": "boolean",
+                "description": "drafts_list: reverse the order",
+            },
+            "page": {
+                "type": "integer",
+                "description": "drafts_list: page number, from zero",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "drafts_list: drafts per page; 0 lists all (default 25 when absent)",
             },
             "attach": {
                 "type": "array",
