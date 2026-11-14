@@ -48,27 +48,43 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _guarded_send(http: httpx.Client, path: str,
+                  params: dict[str, Any] | None) -> httpx.Response:
+    """Send one request with the shared guard/refresh/429 semantics."""
+    store = oauth.load_store()
+    resp = http.get(path, params=params, headers=_auth(oauth.access_token(store)))
+    rate.STATE.update_from_headers(resp.headers)
+    if resp.status_code == 401:
+        # Retry once after a refresh (section 3.2): the access token
+        # rotates every six hours.
+        refreshed = oauth.refresh_access_token()
+        resp = http.get(path, params=params,
+                        headers=_auth(oauth.access_token(refreshed)))
+        rate.STATE.update_from_headers(resp.headers)
+    if resp.status_code == 429:
+        wait = rate.STATE.wait_after_429()
+        raise rate.RateGuardError(
+            "strava returned 429 too many requests; wait before retrying",
+            wait=wait,
+        )
+    if resp.status_code >= 400:
+        raise StravaAPIError(resp.status_code, resp.text)
+    return resp
+
+
 def api_get(path: str, params: dict[str, Any] | None = None) -> Any:
     """Guarded GET; returns the parsed JSON body of a 2xx response."""
     rate.STATE.check()  # D5 pre-check: refuse before spending a request
-    store = oauth.load_store()
     with _client() as http:
-        resp = http.get(path, params=params, headers=_auth(oauth.access_token(store)))
-        rate.STATE.update_from_headers(resp.headers)
-        if resp.status_code == 401:
-            # Retry once after a refresh (section 3.2): the access token
-            # rotates every six hours.
-            refreshed = oauth.refresh_access_token()
-            resp = http.get(
-                path, params=params, headers=_auth(oauth.access_token(refreshed))
-            )
-            rate.STATE.update_from_headers(resp.headers)
-        if resp.status_code == 429:
-            wait = rate.STATE.wait_after_429()
-            raise rate.RateGuardError(
-                "strava returned 429 too many requests; wait before retrying",
-                wait=wait,
-            )
-        if resp.status_code >= 400:
-            raise StravaAPIError(resp.status_code, resp.text)
-        return resp.json()
+        return _guarded_send(http, path, params).json()
+
+
+def api_get_bytes(path: str, params: dict[str, Any] | None = None) -> bytes:
+    """Guarded GET returning the raw body (the routes GPX export; sync use).
+
+    Same guard, refresh, and 429 semantics as api_get; the sync's bulk cap
+    gates the call count around it (section 3.4).
+    """
+    rate.STATE.check()
+    with _client() as http:
+        return _guarded_send(http, path, params).content

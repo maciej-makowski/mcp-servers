@@ -1,4 +1,6 @@
-"""MCP server exposing Strava v3 reads: strava_athlete, strava_activities, strava_rate_status.
+"""MCP server exposing Strava v3 reads: strava_athlete, strava_activities,
+strava_rate_status, and the local store's strava_sync (strava-local-store
+design D9).
 
 The proton skeleton (low-level `mcp` Server with on_list_tools /
 on_call_tool handlers) with the shared bearer middleware from
@@ -7,9 +9,10 @@ is enabled when MCP_BEARER or MCP_PORT is set and fails closed without a
 bearer token. The quadlet always runs HTTP on 8016.
 
 Schemas are built from the tool layer's own action tables, so listed and
-callable actions cannot drift (section 3.2). Idle token refresh runs
-alongside the server in both transports (section 3.2); audit logging rides
-on the tool layer (section 3.5).
+callable actions cannot drift (section 3.2). Idle token refresh and the
+tiered local-store sync run alongside the server in both transports
+(section 3.2 and the sync design's A4: one asyncio task next to the
+idle-refresh task; audit logging rides on the tool layer, section 3.5).
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import mcp_types as types
 from mcp.server import lowlevel
 from mcp.server.stdio import stdio_server
 
-from . import idle_refresh, oauth, tools
+from . import idle_refresh, oauth, sync, tools
 
 SERVER_NAME = "strava-mcp"
 DEFAULT_HTTP_PORT = 8016
@@ -45,9 +48,11 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "Strava activities via the v3 API (read-only): actions list "
             "(after/before epoch seconds, page, per_page default 30 clamped "
             "to 100, pages cap of 4 per call), get (detailed record, "
-            "optional include_all_efforts), streams (full key whitelist "
-            "with key_by_type=true, downsampled to max_points unless "
-            "raw=true), zones, laps."
+            "optional include_all_efforts), streams (full key whitelist as "
+            "one CSV with key_by_type=true, downsampled to max_points "
+            "unless raw=true), zones, laps. Optional source=store serves "
+            "list/get/streams from the local store with zero API requests "
+            "(D9)."
         ),
         "params": tools.ACTIVITIES_PARAMS,
     },
@@ -60,6 +65,20 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "next reset times."
         ),
         "params": {},
+    },
+    "strava_sync": {
+        "tool": tools.SYNC_TOOL,
+        "description": (
+            "Local Strava store sync (strava_sync, D9): action status "
+            "reports the per-tier schedule and last runs, the watermark, "
+            "the backfill cursor and remaining count, store counts, "
+            "scope_blocked flags, and the current rate view in one result "
+            "(no API call); action trigger enqueues a tier "
+            "(frequent|slow|sweep|backfill) for the next scheduler tick. "
+            "The first backfill is trigger-only and waits for the "
+            "operator's go (STRAVA_SYNC_ENABLED)."
+        ),
+        "params": tools.SYNC_PARAMS,
     },
 }
 
@@ -147,6 +166,7 @@ def make_server() -> lowlevel.Server:
 async def _run_stdio() -> None:
     server = make_server()
     refresh_task = idle_refresh.start_idle_refresh()
+    sync_task = sync.start_sync()
     try:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(
@@ -154,6 +174,7 @@ async def _run_stdio() -> None:
             )
     finally:
         refresh_task.cancel()
+        sync_task.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -203,11 +224,13 @@ def make_http_asgi(server: Any) -> Any:
     @asynccontextmanager
     async def lifespan(app: Any):
         refresh_task = idle_refresh.start_idle_refresh()
+        sync_task = sync.start_sync()
         try:
             async with manager.run():
                 yield
         finally:
             refresh_task.cancel()
+            sync_task.cancel()
 
     # Explicit Route on /mcp (not Mount, which 307-redirects /mcp -> /mcp/
     # before the auth middleware can see the request). The middleware comes
