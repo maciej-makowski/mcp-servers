@@ -162,6 +162,18 @@ def test_summary_raw_readback(store):
     assert store.summary_raw(999) is None
 
 
+def test_uninitialized_store_reads_raise_store_error(store_root):
+    """A never-initialized index reads as 'not set up yet' (D9), never raw sqlite."""
+    s = Store()
+    s.ensure_dirs()  # install.sh creates the dir; only the sync creates the schema
+    with pytest.raises(StoreError, match="no schema yet"):
+        s.counts()
+    with pytest.raises(StoreError, match="no schema yet"):
+        s.get_state("frequent_watermark")
+    with pytest.raises(StoreError, match="no schema yet"):
+        s.list_summaries()
+
+
 def test_gear_and_counts(store):
     store.upsert_activity_summary(_summary(1, gear_id="b1"))
     store.upsert_activity_summary(_summary(2, gear_id="b1"))
