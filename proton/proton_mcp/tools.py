@@ -168,7 +168,7 @@ MAX_ATTACH_TOTAL_BYTES = 209_715_200  # 200 MiB (D3, against MemoryMax=384M)
 # structured error, so a big download can never burn the whole CLI timeout
 # and die mid-transfer. The CLI timeout derives from the actual size
 # (2 s/MB, floored at 60 s, capped at 1800 s) - at the observed ~7 MB/s
-# that is 3.5x slack. Unparseable or non-positive env values fall back to
+# that is 14x slack. Unparseable or non-positive env values fall back to
 # the default; a metadata read that carries no size fields lets the
 # download proceed at the full budget's timeout (never a false refusal).
 DRIVE_DOWNLOAD_BUDGET_MB_DEFAULT = 525
@@ -827,24 +827,35 @@ class DriveTool(_BaseTool):
             # never a false refusal.
             budget_mb = _drive_download_budget_mb()
             size_mb = None
+            raw_size = None
             try:
                 meta = self._run(["drive", "items", "get", str(path)])
                 meta_data = meta.get("data") if isinstance(meta, dict) else None
                 if isinstance(meta_data, dict):
-                    raw_size = meta_data.get("original_size_bytes",
-                                            meta_data.get("size_bytes"))
-                    if isinstance(raw_size, (int, float)) and raw_size >= 0:
+                    candidate = meta_data.get("original_size_bytes",
+                                              meta_data.get("size_bytes"))
+                    if isinstance(candidate, (int, float)) and candidate >= 0:
+                        raw_size = int(candidate)
                         size_mb = int(raw_size // (1024 * 1024)) + (
                             1 if raw_size % (1024 * 1024) else 0
                         )
             except Exception:  # noqa: BLE001 - metadata must never block
                 size_mb = None
             if size_mb is not None and size_mb > budget_mb:
-                return self._validation_error(
-                    f"download: item size {size_mb} MB exceeds the "
-                    f"{budget_mb} MB budget (PROTON_DRIVE_DOWNLOAD_BUDGET_MB); "
-                    "raise the budget to download it"
-                )
+                # The refusal displays the item's floored MB; the gate itself
+                # stays on the conservative ceiling. No validation tag: the
+                # metadata read ran a CLI call, and the tag's invariant is
+                # 'the CLI never ran' (reviewer NIT, folded).
+                display_mb = raw_size // (1024 * 1024)
+                return {
+                    "success": False,
+                    "error": (
+                        f"download: item size {display_mb} MB exceeds the "
+                        f"{budget_mb} MB budget (PROTON_DRIVE_DOWNLOAD_BUDGET_MB); "
+                        "raise the budget to download it"
+                    ),
+                    "over_budget": True,
+                }
             timeout = _drive_download_timeout(
                 size_mb if size_mb is not None else budget_mb, budget_mb
             )
