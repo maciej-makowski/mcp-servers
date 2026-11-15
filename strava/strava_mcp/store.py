@@ -187,6 +187,25 @@ class Store:
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
+    def _read_connect(self) -> sqlite3.Connection:
+        """Connect for read paths; refuse a never-initialized index (D9).
+
+        A schemaless index.db reads as 'the store is not set up yet' - the
+        callers turn this into the structured error naming strava_sync,
+        never a raw sqlite failure.
+        """
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='activities'"
+        ).fetchone()
+        if row is None:
+            conn.close()
+            raise StoreError(
+                "the store index has no schema yet: run the sync "
+                "(strava_sync trigger) to create it"
+            )
+        return conn
+
     def ensure_dirs(self) -> None:
         try:
             for sub in ("activities", "gear", "athlete", "stats", "zones",
@@ -436,7 +455,7 @@ class Store:
 
     def open_activity_ids(self) -> list[int]:
         """All ids with deleted_at NULL (section 3.6 reconciliation set)."""
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             rows = conn.execute(
                 "SELECT id FROM activities WHERE deleted_at IS NULL ORDER BY id"
             ).fetchall()
@@ -456,7 +475,7 @@ class Store:
 
     def counts(self) -> dict[str, int]:
         """Store counters for the strava_sync status action (section 5)."""
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
             out = {
                 "activities": one("SELECT COUNT(*) FROM activities"),
@@ -489,7 +508,7 @@ class Store:
             q += " AND id >= ?"
             params.append(cursor)
         q += " ORDER BY id ASC"
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             rows = conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
 
@@ -511,7 +530,7 @@ class Store:
             params.append(dt_before.isoformat())
         q += " ORDER BY start_date DESC LIMIT ? OFFSET ?"
         params += [per_page, (page - 1) * per_page]
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             rows = conn.execute(q, params).fetchall()
         return [
             {k: row[k] for k in SUMMARY_COLUMNS if k in row.keys()} for row in rows
@@ -685,7 +704,7 @@ class Store:
     # -- sync_state + sync_log ---------------------------------------------------
 
     def get_state(self, key: str, default: str | None = None) -> str | None:
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             row = conn.execute(
                 "SELECT value FROM sync_state WHERE key = ?", (key,)
             ).fetchone()
@@ -719,7 +738,7 @@ class Store:
             )
 
     def last_batches(self, limit: int = 10) -> list[dict[str, Any]]:
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             rows = conn.execute(
                 """SELECT tier, started_at, finished_at, outcome, api_requests,
                           added, updated, deleted, errors, note
@@ -732,7 +751,7 @@ class Store:
         """Most recent finished batch per tier (what status reads out)."""
         out: dict[str, dict[str, Any]] = {}
         for tier in ("frequent", "slow", "sweep", "backfill"):
-            with self._connect() as conn:
+            with self._read_connect() as conn:
                 row = conn.execute(
                     """SELECT started_at, finished_at, outcome, api_requests,
                               added, updated, deleted, errors
