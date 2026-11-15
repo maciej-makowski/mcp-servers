@@ -191,6 +191,58 @@ def test_backfill_rate_stop_persists_and_resumes(engine, monkeypatch, no_sleep,
     assert store.get_state("backfill_cursor") == ""
 
 
+def test_backfill_marks_404_details_and_continues(engine, monkeypatch, no_sleep,
+                                                  no_photo_net):
+    """A detail that 404s (flagged/removed upstream since the walk) marks the
+    row locally (D10: files stay) and the batch moves on - it never blocks."""
+    _enable(monkeypatch)
+    fake = FakeStrava(monkeypatch)
+    fake.add("/athlete/activities",
+             lambda params: [_summary(1), _summary(2), _summary(3)])
+    fake.add("/athlete", lambda params: {"id": 42})
+    fake.add("/athletes/42/stats", lambda params: {})
+    fake.add("/activities/", lambda params: client.StravaAPIError(
+        404, '{"message":"Resource Not Found"}'))
+    result = engine.run_batch("backfill")
+    assert result["outcome"] == "done"
+    assert result["added"] == 3 and result["deleted"] == 3
+    store = Store()
+    counts = store.counts()
+    assert counts["with_details"] == 0  # nothing fetchable
+    assert store.summaries_missing_backfill() == []  # the set is clear
+    # the archive keeps the summary files (D10)
+    assert os.path.isfile(os.path.join(store.root, "activities", "2",
+                                       "summary.json"))
+    # a walk re-listing the activity leaves the mark (unchanged fingerprint)
+    store.upsert_activity_summary(_summary(2))
+    assert store.activity_row(2)["deleted_at"] is not None
+    # the summary content is unchanged on the next walk, so the marked row
+    # does not revive: the pending set stays clear
+    result2 = engine.run_batch("backfill")
+    assert result2["outcome"] == "done"
+    assert result2["deleted"] == 0 and result2["added"] == 0
+
+
+def test_backfill_marks_streamless_activities(engine, monkeypatch, no_sleep,
+                                              no_photo_net):
+    """A streams 404 (manual/no-sensor entry) stores the marker payload so the
+    item leaves the backfill set instead of retrying forever."""
+    _enable(monkeypatch)
+    fake = FakeStrava(monkeypatch)
+    fake.add("/athlete/activities", lambda params: [_summary(5)])
+    fake.add("/activities/5/streams", lambda params: client.StravaAPIError(
+        404, '{"message":"Resource Not Found"}'))
+    fake.add("/activities/", lambda params: _detail(5))
+    result = engine.run_batch("backfill")
+    assert result["outcome"] == "done"
+    store = Store()
+    counts = store.counts()
+    assert counts["with_details"] == 1 and counts["with_streams"] == 1
+    assert store.summaries_missing_backfill() == []
+    payload = store.streams_payload(5)
+    assert payload == {"unavailable": True}
+
+
 def test_bulk_cap_sleeps_mid_batch(engine, monkeypatch, no_sleep, no_photo_net):
     _enable(monkeypatch)
     monkeypatch.setenv("STRAVA_SYNC_BULK_CAP", "2")
