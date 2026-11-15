@@ -124,6 +124,11 @@ PY
 if [ -s "$TMP_STATUS" ]; then
   chmod 0644 "$TMP_STATUS"
   mv -f "$TMP_STATUS" "$STATUS_FILE"
+  # The store belongs to the mcp user (the container reads and writes its
+  # own state there); hand the root-owned writes over. Without this the
+  # root-owned state/ blocks the sync engine's own state writes (backfill
+  # stalls) and garmin_api_status fails with Permission denied.
+  chown mcp:mcp "$(dirname "$STATUS_FILE")" "$STATUS_FILE" 2>/dev/null || true
   log "backup-status written: healthy=$HEALTHY"
 else
   log "ERROR: failed to write backup-status"
