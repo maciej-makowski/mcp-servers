@@ -127,8 +127,11 @@ if [ -s "$TMP_STATUS" ]; then
   # The store belongs to the mcp user (the container reads and writes its
   # own state there); hand the root-owned writes over. Without this the
   # root-owned state/ blocks the sync engine's own state writes (backfill
-  # stalls) and garmin_api_status fails with Permission denied.
-  chown mcp:mcp "$(dirname "$STATUS_FILE")" "$STATUS_FILE" 2>/dev/null || true
+  # stalls) and garmin_api_status fails with Permission denied. A failed
+  # chown must stay loud: silence here re-introduces the exact bug this
+  # guards against, invisibly.
+  chown mcp:mcp "$(dirname "$STATUS_FILE")" "$STATUS_FILE" \
+    || log "WARN: chown to mcp failed (the container may not read/write state)"
   log "backup-status written: healthy=$HEALTHY"
 else
   log "ERROR: failed to write backup-status"
