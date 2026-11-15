@@ -230,27 +230,57 @@ def _fetch_photo(store: Store, activity_id: int, detail: dict[str, Any],
 def _process_activity(store: Store, counters: Counters, pacer: Pacer,
                       activity_id: int, now: str, with_efforts: bool = True
                       ) -> None:
-    """Detail (include_all_efforts) + streams + primary photo for one id."""
-    pacer.gate()
-    counters.api_requests += 1
-    detail = client.api_get(
-        f"/activities/{activity_id}",
-        params={"include_all_efforts": "true"} if with_efforts else None,
-    )
+    """Detail (include_all_efforts) + streams + primary photo for one id.
+
+    Per-item error handling (section 3.6): a 404 detail means the activity
+    vanished upstream since the walk (flagged/removed) - the row is marked
+    deleted locally (files stay per D10; the sweep's list membership revives
+    it if it returns) and the batch moves on. A 404 streams means the
+    activity has no sensor data (manual entry): a marker payload is stored
+    so the item leaves the backfill set. Any other upstream error is
+    counted and retried by the next run of the tier.
+    """
+    try:
+        pacer.gate()
+        counters.api_requests += 1
+        detail = client.api_get(
+            f"/activities/{activity_id}",
+            params={"include_all_efforts": "true"} if with_efforts else None,
+        )
+    except client.StravaAPIError as exc:
+        if exc.status == 404:
+            store.mark_deleted([activity_id], now=now)
+            counters.deleted += 1
+            log.info("activity %s detail 404 (gone upstream): marked locally, skipped",
+                     activity_id)
+            return
+        counters.errors += 1
+        log.warning("detail for %s failed (retried next run): %s", activity_id, exc)
+        return
     if not isinstance(detail, dict):
         counters.errors += 1
         log.warning("detail for %s came back with an unexpected shape", activity_id)
         return
     store.save_detail(activity_id, detail, now=now)
-    pacer.gate()
-    counters.api_requests += 1
-    streams = client.api_get(
-        f"/activities/{activity_id}/streams",
-        params={"keys": ",".join(tools_stream_keys()), "key_by_type": "true"},
-    )
+    try:
+        pacer.gate()
+        counters.api_requests += 1
+        streams = client.api_get(
+            f"/activities/{activity_id}/streams",
+            params={"keys": ",".join(tools_stream_keys()), "key_by_type": "true"},
+        )
+    except client.StravaAPIError as exc:
+        if exc.status == 404:
+            store.save_streams(activity_id, {"unavailable": True}, now=now)
+            log.info("activity %s has no streams (manual entry): marker stored", activity_id)
+            streams = None
+        else:
+            counters.errors += 1
+            log.warning("streams for %s failed (retried next run): %s", activity_id, exc)
+            streams = None
     if isinstance(streams, dict):
         store.save_streams(activity_id, streams, now=now)
-    else:
+    elif streams is not None:
         counters.errors += 1
         log.warning("streams for %s came back with an unexpected shape", activity_id)
     try:
