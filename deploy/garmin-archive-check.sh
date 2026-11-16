@@ -107,17 +107,25 @@ fi
 
 mkdir -p "$(dirname "$STATUS_FILE")"
 TMP_STATUS="$STATUS_FILE.tmp.$$"
-python3 - "$TMP_STATUS" <<PY
+# The payload values cross into Python as ARGV, and the heredoc delimiter is
+# quoted: zero shell interpolation inside Python. The old inline form
+# interpolated $HEALTHY straight into the source, producing the bash literals
+# false/true — NameError on every run, on BOTH outcomes, so backup-status.json
+# was never written once since deploy (live-verified Nov 15-16 on rpi5-0:
+# "NameError: name 'false' is not defined" in every checker log).
+python3 - "$TMP_STATUS" "$TODAY" "$HEALTHY" "$REASON" "$LAST_UPLOAD" \
+  "$NEWEST_ITEM" "$AGE_HOURS" <<'PY'
 import json, sys
+_tmp, _today, _healthy, _reason, _last, _item, _age = sys.argv[1:8]
 payload = {
-    "date": "$TODAY",
-    "off_host_healthy": $HEALTHY,
-    "reason": "$REASON",
-    "last_upload": "$LAST_UPLOAD" or None,
-    "newest_drive_item": "$NEWEST_ITEM" or None,
-    "age_hours": ${AGE_HOURS:-None},
+    "date": _today,
+    "off_host_healthy": _healthy == "true",
+    "reason": _reason,
+    "last_upload": _last or None,
+    "newest_drive_item": _item or None,
+    "age_hours": int(_age) if _age else None,
 }
-with open(sys.argv[1], "w", encoding="utf-8") as fh:
+with open(_tmp, "w", encoding="utf-8") as fh:
     json.dump(payload, fh, indent=1, sort_keys=True)
     fh.write("\n")
 PY
