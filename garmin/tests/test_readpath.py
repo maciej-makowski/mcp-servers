@@ -373,21 +373,33 @@ def test_workout_usage_readthrough(tmp_path, clean_tools, fake):
 
 def test_trend_readthrough_uses_store(tmp_path, clean_tools, fake):
     """§3.5: trend aggregates from the store's perday files (derived from the
-    chunk) with the same weekly code as today, zero upstream calls."""
-    payload = load_fixture("daily_steps.json")
-    store = make_store(tmp_path, anchor=dt.date(2026, 11, 7))
-    piece = payload["families"]["steps"]["chunks"][0]
+    chunk) with the same weekly code as today, zero upstream calls.
+
+    Date-independent: the grid chunk is anchored at today - 27 d and the
+    seeded records are re-dated into the trailing six days ending today,
+    so every expected value is computed from the records' own dates and
+    the test cannot rot as the calendar walks (the original pinned
+    2026-11-07 and rotted on 2026-11-17)."""
+    today = dt.date.today()
+    anchor = today - dt.timedelta(days=27)
+    store = make_store(tmp_path, anchor=anchor)
+    piece = load_fixture("daily_steps.json")["families"]["steps"]["chunks"][0]
+    # re-date the fixture's trailing records into the trend window
+    # (today-5 .. today); all other fields ride along unchanged
+    records = [dict(r, calendarDate=(today - dt.timedelta(days=5 - o)).isoformat())
+               for o, r in enumerate(piece["data"][-6:])]
     # seed the grid chunk covering the trend window; its perday files derive
-    seed_ranged_chunk(store, "steps", dt.date(2026, 11, 7),
-                      dt.date(2026, 11, 7) + dt.timedelta(days=27),
-                      piece["data"][-6:])
+    seed_ranged_chunk(store, "steps", anchor,
+                      anchor + dt.timedelta(days=27), records)
     readpath.reset_for_tests(store, "read_through")
     out = tools.trend("steps", weeks=1)
     assert out["family"] == "steps"
     assert out["buckets"]
     bucket = out["buckets"][-1]
-    assert bucket["week_start"] == "2026-11-09"  # Monday-anchored
-    in_window = [r for r in piece["data"] if r["calendarDate"] >= "2026-11-09"]
+    last_day = dt.date.fromisoformat(max(r["calendarDate"] for r in records))
+    week_start = last_day - dt.timedelta(days=last_day.weekday())
+    assert bucket["week_start"] == week_start.isoformat()  # Monday-anchored
+    in_window = [r for r in records if r["calendarDate"] >= week_start.isoformat()]
     assert bucket["days"] == len(in_window)
     assert bucket["mean"]["totalSteps"] == round(
         sum(r["totalSteps"] for r in in_window) / len(in_window), 3)
