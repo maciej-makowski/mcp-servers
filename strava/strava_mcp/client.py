@@ -16,13 +16,39 @@ No network happens at import time; tests swap in httpx.MockTransport.
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 import httpx
 
 from . import oauth, rate
 
-BASE_URL = "https://www.strava.com/api/v3"
+log = logging.getLogger("mcp.strava.client")
+
+DEFAULT_BASE_URL = "https://www.strava.com/api/v3"
+
+
+def _base_url() -> str:
+    """The API base URL; STRAVA_API_BASE_URL overrides it.
+
+    The override exists for the 2027 migration: the changelog moves the v3
+    API from www.strava.com/api/v3 to https://api-v3.strava.com, whose host
+    is available from January 4, 2027 (the old host serves until the
+    switch deadline). Until the flip the env stays unset. A set value must
+    carry an http(s):// scheme - anything else refuses to boot loudly
+    rather than silently sending traffic to a typo'd host.
+    """
+    raw = os.environ.get("STRAVA_API_BASE_URL", "").strip()
+    if raw and not raw.startswith(("http://", "https://")):
+        raise ValueError(
+            f"STRAVA_API_BASE_URL must start with http(s)://; got {raw!r}"
+        )
+    return raw or DEFAULT_BASE_URL
+
+
+BASE_URL = _base_url()
+log.info("strava api base url: %s", BASE_URL)
 REQUEST_TIMEOUT_S = 60.0
 
 
@@ -48,27 +74,43 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _guarded_send(http: httpx.Client, path: str,
+                  params: dict[str, Any] | None) -> httpx.Response:
+    """Send one request with the shared guard/refresh/429 semantics."""
+    store = oauth.load_store()
+    resp = http.get(path, params=params, headers=_auth(oauth.access_token(store)))
+    rate.STATE.update_from_headers(resp.headers)
+    if resp.status_code == 401:
+        # Retry once after a refresh (section 3.2): the access token
+        # rotates every six hours.
+        refreshed = oauth.refresh_access_token()
+        resp = http.get(path, params=params,
+                        headers=_auth(oauth.access_token(refreshed)))
+        rate.STATE.update_from_headers(resp.headers)
+    if resp.status_code == 429:
+        wait = rate.STATE.wait_after_429()
+        raise rate.RateGuardError(
+            "strava returned 429 too many requests; wait before retrying",
+            wait=wait,
+        )
+    if resp.status_code >= 400:
+        raise StravaAPIError(resp.status_code, resp.text)
+    return resp
+
+
 def api_get(path: str, params: dict[str, Any] | None = None) -> Any:
     """Guarded GET; returns the parsed JSON body of a 2xx response."""
     rate.STATE.check()  # D5 pre-check: refuse before spending a request
-    store = oauth.load_store()
     with _client() as http:
-        resp = http.get(path, params=params, headers=_auth(oauth.access_token(store)))
-        rate.STATE.update_from_headers(resp.headers)
-        if resp.status_code == 401:
-            # Retry once after a refresh (section 3.2): the access token
-            # rotates every six hours.
-            refreshed = oauth.refresh_access_token()
-            resp = http.get(
-                path, params=params, headers=_auth(oauth.access_token(refreshed))
-            )
-            rate.STATE.update_from_headers(resp.headers)
-        if resp.status_code == 429:
-            wait = rate.STATE.wait_after_429()
-            raise rate.RateGuardError(
-                "strava returned 429 too many requests; wait before retrying",
-                wait=wait,
-            )
-        if resp.status_code >= 400:
-            raise StravaAPIError(resp.status_code, resp.text)
-        return resp.json()
+        return _guarded_send(http, path, params).json()
+
+
+def api_get_bytes(path: str, params: dict[str, Any] | None = None) -> bytes:
+    """Guarded GET returning the raw body (the routes GPX export; sync use).
+
+    Same guard, refresh, and 429 semantics as api_get; the sync's bulk cap
+    gates the call count around it (section 3.4).
+    """
+    rate.STATE.check()
+    with _client() as http:
+        return _guarded_send(http, path, params).content

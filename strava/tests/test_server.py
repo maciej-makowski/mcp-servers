@@ -14,13 +14,14 @@ def test_server_main_exists():
 
 
 def test_three_tools_registered():
-    """D6: exactly the three v1 tools, no extras."""
+    """D6 + the local-store tool (D9): four registered tools, no extras."""
     from strava_mcp.server import INPUT_SCHEMAS, TOOL_SPECS
 
     assert set(TOOL_SPECS) == {
         "strava_athlete",
         "strava_activities",
         "strava_rate_status",
+        "strava_sync",
     }
     assert set(INPUT_SCHEMAS) == set(TOOL_SPECS)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -1478,3 +1479,567 @@ def test_send_validation_order_pinning(rec, spool, monkeypatch):
     assert r["validation"] is True
     assert "'attach' must be a list" in r["error"]
     assert rec["argv"] == []
+
+
+# --- drafts actions (design §5 tests 1-19 and 22-23; tests 20-21 live in
+# test_mcp_tools.py) ---
+#
+# All hermetic: monkeypatched runner, no network, no real Proton calls. The
+# spool fixture repoints ATTACH_SPOOL_ROOT at a tmp dir, so the body_path
+# gate never touches /srv/mcp_files/send; the cap is monkeypatched small
+# where it matters (tests 11 and the cap refusals).
+
+
+def _drafts_list_payload(count: int = 0) -> dict:
+    """The CLI's drafts listing envelope (fact 15)."""
+    return {"drafts": [], "count": count}
+
+
+def _created_payload() -> dict:
+    """The CLI's created envelope (fact 3)."""
+    return {
+        "action": "created", "count": 1, "dry_run": False,
+        "kind": "draft", "name": "Hi", "ids": ["d123"],
+    }
+
+
+def _saved_payload() -> dict:
+    """The CLI's saved envelope for a reply saved as a draft (fact 8)."""
+    return {
+        "action": "saved", "count": 1, "dry_run": False,
+        "kind": "draft", "name": "Re: Hi", "ids": ["d124"],
+    }
+
+
+def _sent_draft_payload() -> dict:
+    """The CLI's sent envelope for a delivered draft (fact 6: the draft's
+    own id rides in both the dry-run preview and the real run)."""
+    return {
+        "action": "sent", "count": 1, "dry_run": False,
+        "kind": "message", "name": "Hi", "ids": ["d123"],
+    }
+
+
+# --- argv shape (tests 1-6) ------------------------------------------------------
+
+
+def test_drafts_list_argv_defaults(rec):
+    """Test 1: bare `mail drafts list`; no flags when no params."""
+    rec["proc"] = proc_json(_drafts_list_payload())
+    tools.MAIL_TOOL.dispatch("drafts_list", {})
+    assert tail_without_globals(rec["argv"]) == ["mail", "drafts", "list"]
+
+
+def test_drafts_list_argv_passthrough(rec):
+    """Test 2: `--sort size --desc --limit 5 --page 1` land in parameter
+    order after `list`."""
+    rec["proc"] = proc_json(_drafts_list_payload())
+    tools.MAIL_TOOL.dispatch(
+        "drafts_list", {"sort": "size", "desc": True, "limit": 5, "page": 1}
+    )
+    assert tail_without_globals(rec["argv"]) == [
+        "mail", "drafts", "list",
+        "--sort", "size", "--desc", "--limit", "5", "--page", "1",
+    ]
+
+
+@pytest.mark.parametrize("rid", ["abc123", "-abc123", "--abc123"])
+def test_drafts_get_argv_marks_ref(rec, rid):
+    """Test 3: `mail messages get -- <id>`; a dash-leading id and a
+    double-dash id land as literal positionals after the `--`."""
+    rec["proc"] = proc_json({"id": rid, "subject": "Hi", "body": "hello"})
+    tools.MAIL_TOOL.dispatch("drafts_get", {"id": rid})
+    assert tail_without_globals(rec["argv"]) == ["mail", "messages", "get", "--", rid]
+
+
+def test_drafts_create_argv_basic(rec):
+    """Test 4: exact `mail drafts create --to <t> --subject <s> --body -`,
+    stdin_text carrying the body."""
+    rec["proc"] = proc_json(_created_payload())
+    r = tools.MAIL_TOOL.dispatch(
+        "drafts_create", {"to": "x@y.z", "subject": "Hi", "body": "secret-body"}
+    )
+    assert tail_without_globals(rec["argv"]) == [
+        "mail", "drafts", "create", "--to", "x@y.z", "--subject", "Hi", "--body", "-",
+    ]
+    assert rec["input"] == "secret-body"
+    assert r["success"] is True
+
+
+def test_reply_draft_argv_basic(rec):
+    """Test 5: exact `mail messages reply --draft --body - -- <id>`,
+    stdin_text carrying the text."""
+    rec["proc"] = proc_json(_saved_payload())
+    r = tools.MAIL_TOOL.dispatch("reply_draft", {"id": "m9", "body": "my reply text"})
+    assert tail_without_globals(rec["argv"]) == [
+        "mail", "messages", "reply", "--draft", "--body", "-", "--", "m9",
+    ]
+    assert rec["input"] == "my reply text"
+    assert r["success"] is True
+
+
+def test_reply_draft_everyone_flag(rec):
+    """Test 6: `--everyone` present when true, absent otherwise, always
+    before the `--`."""
+    rec["proc"] = proc_json(_saved_payload())
+    tools.MAIL_TOOL.dispatch("reply_draft", {"id": "m9", "body": "t", "everyone": True})
+    args = tail_without_globals(rec["argv"])
+    assert args == [
+        "mail", "messages", "reply", "--draft", "--body", "-", "--everyone", "--", "m9",
+    ]
+    rec["proc"] = proc_json(_saved_payload())
+    tools.MAIL_TOOL.dispatch("reply_draft", {"id": "m9", "body": "t", "everyone": False})
+    args = tail_without_globals(rec["argv"])
+    assert "--everyone" not in args
+    assert args == ["mail", "messages", "reply", "--draft", "--body", "-", "--", "m9"]
+
+
+# --- validation: the CLI never runs, the runner is not called (tests 7-11) -------
+
+
+@pytest.mark.parametrize("bad", [None, "", 5, ["abc"], True])
+@pytest.mark.parametrize("action", ["drafts_get", "reply_draft", "drafts_send"])
+def test_drafts_get_reply_send_ref_validation(rec, action, bad):
+    """Test 7: a missing, empty, non-string, list, and boolean `id` each
+    refuse on all three ref-taking actions."""
+    params = {} if bad is None else {"id": bad}
+    if action == "drafts_send":
+        rec["proc"] = proc_json(_sent_draft_payload())
+    rec["argv"] = []
+    r = tools.MAIL_TOOL.dispatch(action, params, confirm=True)
+    assert r["success"] is False, (action, bad)
+    assert r["validation"] is True, (action, bad)
+    assert "id" in r["error"], (action, bad)
+    assert r["exit_code"] is None and r["auth_required"] is False, (action, bad)
+    assert rec["argv"] == [], (action, bad)
+
+
+@pytest.mark.parametrize(
+    "params, needle",
+    [
+        ({}, "to"),
+        ({"to": ""}, "to"),
+        ({"to": "x@y.z"}, "subject"),
+        ({"to": "x@y.z", "subject": 5}, "subject"),
+    ],
+)
+def test_drafts_create_validation(rec, params, needle):
+    """Test 8: missing `to`, empty `to`, missing `subject`, non-string
+    `subject` each refuse; a subject present but empty passes to argv."""
+    for given in (params, dict(params, body="b")):
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch("drafts_create", given)
+        assert r["success"] is False, given
+        assert r["validation"] is True, given
+        assert needle in r["error"], (given, r["error"])
+        assert rec["argv"] == [], given
+    # Subject present but empty passes to argv (D6: present, may be empty).
+    rec["proc"] = proc_json(_created_payload())
+    tools.MAIL_TOOL.dispatch("drafts_create", {"to": "x@y.z", "subject": "", "body": "b"})
+    args = tail_without_globals(rec["argv"])
+    assert args[args.index("--subject") + 1] == ""
+
+
+@pytest.mark.parametrize("action", ["drafts_create", "reply_draft"])
+def test_body_exclusivity(rec, spool, action):
+    """Test 9: both `body` and `body_path` refuse; neither refuses, on both
+    composing actions (upstream shape checks passing first)."""
+    staged = _staged(spool, "body.txt")
+    if action == "drafts_create":
+        base = {"to": "x@y.z", "subject": "Hi"}
+    else:
+        base = {"id": "m9"}
+    for extra in ({"body": "inline", "body_path": str(staged)}, {}):
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch(action, dict(base, **extra))
+        assert r["success"] is False, (action, extra)
+        assert r["validation"] is True, (action, extra)
+        assert "body" in r["error"] and "body_path" in r["error"], (action, extra)
+        assert rec["argv"] == [], (action, extra)
+
+
+def test_body_path_gate(rec, spool, tmp_path):
+    """Test 10: out-of-root path, `..` traversal, and an outside-pointing
+    symlink each refuse with the companion's wording; a directory and the
+    spool root refuse as not-a-regular-file."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_file = outside / "f.txt"
+    outside_file.write_text("x")
+    link = spool / "link.txt"
+    link.symlink_to(outside_file)  # inside the root, target outside
+    sub = spool / "subdir"
+    sub.mkdir()
+    containment_cases = [
+        (str(outside_file), "must live under"),
+        (f"{spool}/../f.txt", "must live under"),
+        (str(link), "must live under"),
+    ]
+    regular_file_cases = [
+        (str(sub), "not a regular file"),
+        (str(spool), "not a regular file"),
+    ]
+    for action in ("drafts_create", "reply_draft"):
+        base = {"to": "x@y.z", "subject": "Hi"} if action == "drafts_create" else {"id": "m9"}
+        for raw, needle in containment_cases + regular_file_cases:
+            rec["argv"] = []
+            r = tools.MAIL_TOOL.dispatch(action, dict(base, body_path=raw))
+            assert r["success"] is False, (action, raw)
+            assert r["validation"] is True, (action, raw)
+            assert needle in r["error"], (action, raw, r["error"])
+            assert r["exit_code"] is None and r["auth_required"] is False, (action, raw)
+            assert rec["argv"] == [], (action, raw)
+        for raw, _ in containment_cases:
+            r = tools.MAIL_TOOL.dispatch(action, dict(base, body_path=raw))
+            assert raw in r["error"], raw  # the offending path is named
+
+
+def test_body_path_cap_and_content(rec, spool, monkeypatch):
+    """Test 11: a file over the monkeypatched cap refuses with the total and
+    cap named; at the cap the content rides stdin_text and the argv carries
+    `--body -`; a file grown between the stat and the read refuses at the
+    read with the same wording."""
+    monkeypatch.setattr(tools, "MAX_ATTACH_TOTAL_BYTES", 10)
+    rec["proc"] = proc_json(_created_payload())
+    over = _staged(spool, "over.txt", 11)
+    r = tools.MAIL_TOOL.dispatch(
+        "drafts_create", {"to": "x@y.z", "subject": "Hi", "body_path": str(over)}
+    )
+    assert r["success"] is False and r["validation"] is True
+    assert "11 bytes exceeds the 10-byte cap" in r["error"]
+    assert rec["argv"] == []  # the CLI never runs
+
+    at = _staged(spool, "at.txt", 10)  # exactly at the cap: content rides stdin
+    tools.MAIL_TOOL.dispatch(
+        "drafts_create", {"to": "x@y.z", "subject": "Hi", "body_path": str(at)}
+    )
+    args = tail_without_globals(rec["argv"])
+    assert args == [
+        "mail", "drafts", "create", "--to", "x@y.z", "--subject", "Hi", "--body", "-",
+    ]
+    assert rec["input"] == "x" * 10
+
+    # Grown between the stat and the read: the stat reports under-cap, the
+    # read holds over-cap, and the read's re-check refuses with the same
+    # over-cap wording.
+    grown = _staged(spool, "grown.txt", 12)
+    real_getsize = os.path.getsize
+    monkeypatch.setattr(os.path, "getsize", lambda p: 9)
+    rec["argv"] = []
+    r = tools.MAIL_TOOL.dispatch(
+        "drafts_create", {"to": "x@y.z", "subject": "Hi", "body_path": str(grown)}
+    )
+    assert r["success"] is False and r["validation"] is True
+    assert "12 bytes exceeds the 10-byte cap" in r["error"]
+    assert rec["argv"] == []
+    assert real_getsize(grown) == 12  # the file was never modified
+
+
+# --- behavior (tests 12-18) --------------------------------------------------------
+
+
+def test_drafts_send_gated_flow(rec, monkeypatch):
+    """Test 12: confirm=false produces the preview envelope with --dry-run
+    in the prepended region and data.ids present; confirm=true runs without
+    --dry-run; the dry-run argv check still refuses a dropped flag."""
+    rec["proc"] = proc_json(_sent_draft_payload())
+    r = tools.MAIL_TOOL.dispatch("drafts_send", {"id": "d123"}, confirm=False)
+    assert r["success"] is True
+    assert r["applied"] is False and r["dry_run"] is True
+    assert r["action"] == "drafts_send"
+    assert r["preview"]["data"]["ids"] == ["d123"]  # fact 6: the draft's own id
+    assert rec["argv"][:5] == [
+        str(runner.PROTON_BIN), "--output", "json", "--no-input", "--dry-run",
+    ]
+    assert tail_without_globals(rec["argv"]) == ["mail", "drafts", "send", "--", "d123"]
+
+    r2 = tools.MAIL_TOOL.dispatch("drafts_send", {"id": "d123"}, confirm=True)
+    assert "--dry-run" not in rec["argv"]
+    assert r2["applied"] is True and r2["dry_run"] is False
+    assert r2["data"]["ids"] == ["d123"]
+
+    # The dry-run argv check still refuses a runner that drops the flag.
+    def stripping_run(args, **kw):
+        if "--dry-run" in args:
+            runner.LAST_ARGV = [a for a in args if a != "--dry-run"]
+        rec["argv"] = list(args)
+        return make_proc()
+
+    monkeypatch.setattr(subprocess, "run", stripping_run)
+    with pytest.raises(RuntimeError):
+        tools.MAIL_TOOL.dispatch("drafts_send", {"id": "d123"}, confirm=False)
+
+
+def test_drafts_send_argv(rec):
+    """Test 13: exact `mail drafts send -- <id>`."""
+    rec["proc"] = proc_json(_sent_draft_payload())
+    tools.MAIL_TOOL.dispatch("drafts_send", {"id": "d123"}, confirm=True)
+    assert tail_without_globals(rec["argv"]) == ["mail", "drafts", "send", "--", "d123"]
+
+
+def test_drafts_send_forbidden_flags_sweep(rec):
+    """Test 14: no argv carries --send-at, --expires, --eo-password-file, or
+    --eo-password-hint (D7: delivery flags unwired), in either confirm
+    mode."""
+    rec["proc"] = proc_json(_sent_draft_payload())
+    forbidden = ["--send-at", "--expires", "--eo-password-file", "--eo-password-hint"]
+    for params in ({"id": "d123"}, {"id": "-d123"}, {"id": "--d123"}):
+        for confirm in (False, True):
+            rec["argv"] = []
+            r = tools.MAIL_TOOL.dispatch("drafts_send", params, confirm=confirm)
+            assert r["success"] is True, (params, confirm, r)
+            for flag in forbidden:
+                assert flag not in rec["argv"], (params, flag)
+            assert not [a for a in rec["argv"] if a.startswith("--eo-password")], params
+
+
+def test_reply_draft_forbidden_flags_sweep(rec, spool):
+    """Test 15: no reply_draft argv carries the unwired compose flags, any
+    delivery or EO flag, or --no-quote (D7); --draft always present, before
+    the `--`."""
+    rec["proc"] = proc_json(_saved_payload())
+    forbidden = [
+        "--to", "--cc", "--bcc", "--attach", "--attach-inline", "--html",
+        "--eml", "--from", "--no-signature", "--request-receipt", "--no-quote",
+        "--send-at", "--expires", "--eo-password-file", "--eo-password-hint",
+    ]
+    staged = _staged(spool, "rb.txt")
+    cases = [
+        {"id": "m9", "body": "t"},
+        {"id": "m9", "body": "t", "everyone": True},
+        {"id": "-m9", "body": "t"},
+        {"id": "m9", "body_path": str(staged)},
+        {"id": "m9", "body_path": str(staged), "everyone": True},
+    ]
+    for params in cases:
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch("reply_draft", params)
+        assert r["success"] is True, (params, r)
+        args = rec["argv"]
+        for flag in forbidden:
+            assert flag not in args, (params, flag)
+        assert not [a for a in args if a.startswith("--eo-password")], params
+        assert "--draft" in args, params
+        assert args.index("--") > args.index("--draft"), params
+
+
+def test_drafts_create_forbidden_flags_sweep(rec, spool):
+    """Test 16: no drafts_create argv carries --cc, --bcc, --attach,
+    --attach-inline, --html, --eml, --from, --no-signature, or
+    --request-receipt (D7)."""
+    rec["proc"] = proc_json(_created_payload())
+    forbidden = [
+        "--cc", "--bcc", "--attach", "--attach-inline", "--html", "--eml",
+        "--from", "--no-signature", "--request-receipt",
+    ]
+    staged = _staged(spool, "cb.txt")
+    cases = [
+        {"to": "x@y.z", "subject": "Hi", "body": "b"},
+        {"to": "x@y.z", "subject": "", "body": "b"},
+        {"to": "x@y.z", "subject": "Hi", "body_path": str(staged)},
+    ]
+    for params in cases:
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch("drafts_create", params)
+        assert r["success"] is True, (params, r)
+        for flag in forbidden:
+            assert flag not in rec["argv"], (params, flag)
+        assert not [a for a in rec["argv"] if a.startswith("--eo-password")], params
+
+
+def test_ungated_drafts_never_dry_run_sweep(rec, spool):
+    """Test 17: no argv for drafts_list, drafts_get, drafts_create, or
+    reply_draft carries --dry-run in any case (the read class, the download
+    precedent)."""
+    staged = _staged(spool, "nd.txt")
+    cases = [
+        ("drafts_list", {}),
+        ("drafts_list", {"sort": "size", "desc": True, "limit": 5, "page": 1}),
+        ("drafts_list", {"confirm": False}),  # a stray confirm key changes nothing
+        ("drafts_get", {"id": "d1"}),
+        ("drafts_create", {"to": "x@y.z", "subject": "Hi", "body": "b"}),
+        ("drafts_create", {"to": "x@y.z", "subject": "Hi", "body_path": str(staged)}),
+        ("reply_draft", {"id": "m9", "body": "t"}),
+        ("reply_draft", {"id": "m9", "body_path": str(staged), "everyone": True}),
+    ]
+    for action, params in cases:
+        rec["argv"] = []
+        rec["proc"] = proc_json({"drafts": [], "count": 0, "ok": True})
+        r = tools.MAIL_TOOL.dispatch(action, params)
+        assert r["success"] is True, (action, params, r)
+        assert rec["argv"], (action, params)
+        assert "--dry-run" not in rec["argv"], (action, params)
+        assert "--dry-run" not in (runner.LAST_ARGV or []), (action, params)
+
+
+def test_drafts_envelope_passthrough(rec):
+    """Test 18: the runner's data reaches the envelope unchanged for create,
+    reply, send, list, and get (no wrapper keys added)."""
+    payloads = {
+        "drafts_create": _created_payload(),
+        "reply_draft": _saved_payload(),
+        "drafts_send": _sent_draft_payload(),
+        "drafts_list": _drafts_list_payload(2),
+        "drafts_get": {"id": "d123", "subject": "Hi", "body": "hello"},
+    }
+    params_by_action = {
+        "drafts_create": {"to": "x@y.z", "subject": "Hi", "body": "b"},
+        "reply_draft": {"id": "m9", "body": "t"},
+        "drafts_send": {"id": "d123"},
+        "drafts_list": {},
+        "drafts_get": {"id": "d123"},
+    }
+    for action, payload in payloads.items():
+        rec["proc"] = proc_json(payload)
+        r = tools.MAIL_TOOL.dispatch(
+            action, params_by_action[action],
+            confirm=True if action == "drafts_send" else None,
+        )
+        assert r["success"] is True, action
+        assert r["data"] == payload, action
+
+
+# --- list-param validation (test 19) -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"limit": "50"},
+        {"limit": 1.5},
+        {"limit": True},
+        {"page": "2"},
+        {"page": 2.5},
+        {"page": False},
+        {"desc": "yes"},
+        {"desc": 1},
+        {"sort": "subject"},
+        {"sort": 5},
+    ],
+)
+def test_drafts_list_validation(rec, params):
+    """Test 19: a non-integer limit or page, a boolean limit or page, a
+    non-boolean desc, and a sort outside {time, size} each refuse; no junk
+    path emits argv."""
+    rec["argv"] = []
+    r = tools.MAIL_TOOL.dispatch("drafts_list", params)
+    assert r["success"] is False, params
+    assert r["validation"] is True, params
+    assert r["exit_code"] is None, params
+    assert rec["argv"] == [], params
+
+    # Valid shapes pass to argv: limit 0 lists all, a False desc omits the
+    # bare switch, sort time rides through.
+    rec["proc"] = proc_json(_drafts_list_payload())
+    tools.MAIL_TOOL.dispatch("drafts_list", {"limit": 0, "desc": False, "sort": "time"})
+    assert tail_without_globals(rec["argv"]) == [
+        "mail", "drafts", "list", "--sort", "time", "--limit", "0",
+    ]
+
+
+# --- read and shape refusals (tests 22-23) ------------------------------------------
+
+
+def test_body_path_read_refusals(rec, spool, monkeypatch):
+    """Test 22: the vanished refusal is pinned for both sub-windows, vanish
+    before the stat and vanish between the stat and the read (monkeypatched
+    file calls), each refusing with the shipped vanished wording as a
+    structured error; a file that is not valid UTF-8 refuses with a
+    structured error; the CLI never runs in any case."""
+    real_getsize = os.path.getsize  # captured before any patching
+    real_remove = os.remove
+    for action in ("drafts_create", "reply_draft"):
+        base = {"to": "x@y.z", "subject": "Hi"} if action == "drafts_create" else {"id": "m9"}
+
+        # Sub-window 1: vanish between the existence check and the stat.
+        f1 = _staged(spool, "vanish1.txt", 5)
+
+        def vanished_stat(p):
+            raise FileNotFoundError(f"vanished: {p}")
+
+        monkeypatch.setattr(os.path, "getsize", vanished_stat)
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch(action, dict(base, body_path=str(f1)))
+        assert r["success"] is False, action
+        assert r["validation"] is True, action
+        assert "vanished during validation" in r["error"], (action, r["error"])
+        assert rec["argv"] == [], action
+
+        # Sub-window 2: vanish between the stat and the read. The fake
+        # getsize reports the real size and then removes the file, so the
+        # read opens into nothing.
+        f2 = _staged(spool, "vanish2.txt", 5)
+
+        def vanish_after_stat(p):
+            size = real_getsize(p)
+            real_remove(p)
+            return size
+
+        monkeypatch.setattr(os.path, "getsize", vanish_after_stat)
+        rec["argv"] = []
+        r = tools.MAIL_TOOL.dispatch(action, dict(base, body_path=str(f2)))
+        assert r["success"] is False, action
+        assert r["validation"] is True, action
+        assert "vanished during validation" in r["error"], (action, r["error"])
+        assert rec["argv"] == [], action
+        assert not f2.exists()
+
+    # Non-UTF-8 bytes refuse with a structured error (the stat restored).
+    monkeypatch.setattr(os.path, "getsize", real_getsize)
+    bad = spool / "bad.bin"
+    bad.write_bytes(b"\xff\xfe\x00not utf-8")
+    rec["argv"] = []
+    r = tools.MAIL_TOOL.dispatch(
+        "drafts_create", {"to": "x@y.z", "subject": "Hi", "body_path": str(bad)}
+    )
+    assert r["success"] is False and r["validation"] is True
+    assert "UTF-8" in r["error"]
+    assert rec["argv"] == []
+
+
+@pytest.mark.parametrize("action", ["drafts_create", "reply_draft"])
+def test_body_and_everyone_shape_refusals(rec, spool, action):
+    """Test 23: an empty inline body string refuses on both composing
+    actions; a non-string body_path refuses; a zero-byte body_path file
+    refuses with the empty-body wording; everyone refuses on reply_draft for
+    any non-boolean, truthy or falsy; the CLI never runs in any case."""
+    base = {"to": "x@y.z", "subject": "Hi"} if action == "drafts_create" else {"id": "m9"}
+
+    # Empty inline body (D6's non-empty-body guarantee, wrapper-enforced).
+    rec["argv"] = []
+    r = tools.MAIL_TOOL.dispatch(action, dict(base, body=""))
+    assert r["success"] is False, action
+    assert r["validation"] is True, action
+    assert "non-empty 'body'" in r["error"], (action, r["error"])
+    assert rec["argv"] == [], action
+
+    # Non-string body_path.
+    rec["argv"] = []
+    r = tools.MAIL_TOOL.dispatch(action, dict(base, body_path=5))
+    assert r["success"] is False, action
+    assert r["validation"] is True, action
+    assert "body_path" in r["error"], (action, r["error"])
+    assert rec["argv"] == [], action
+
+    # Zero-byte spool file: the same D6 guarantee on the spool path.
+    zero = spool / "zero.txt"
+    zero.write_bytes(b"")
+    rec["argv"] = []
+    r = tools.MAIL_TOOL.dispatch(action, dict(base, body_path=str(zero)))
+    assert r["success"] is False, action
+    assert r["validation"] is True, action
+    assert "non-empty 'body'" in r["error"], (action, r["error"])
+    assert rec["argv"] == [], action
+
+    if action == "reply_draft":
+        # everyone: any non-boolean refuses, falsy ones included, with no
+        # silent coercion.
+        for bad in (0, "", "x", 1, [], {}):
+            rec["argv"] = []
+            r = tools.MAIL_TOOL.dispatch(
+                "reply_draft", {"id": "m9", "body": "t", "everyone": bad}
+            )
+            assert r["success"] is False, bad
+            assert r["validation"] is True, bad
+            assert "everyone" in r["error"], bad
+            assert rec["argv"] == [], bad

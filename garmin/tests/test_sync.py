@@ -177,8 +177,11 @@ def test_backfill_full_run_completes(tmp_path, clean_state):
     progress = eng.backfill_progress()
     assert progress["state"] == "complete", progress
     assert progress["progress"] == "5 of 5 stages"
-    # the anchor is the probe-window start containing the era (biased early)
-    assert eng.anchor() == (today - dt.timedelta(days=6)).replace(day=1)
+    # the anchor is biased early (§3.2): the era's first day lies inside
+    # [anchor, anchor + 6], never after it. Exact values are date-coupled.
+    era_start = today - dt.timedelta(days=6)
+    assert eng.anchor() is not None
+    assert eng.anchor() <= era_start <= eng.anchor() + dt.timedelta(days=6)
     assert store.activity_row(11)["detail_fetched_at"] is not None
     assert (store.activity_dir(11) / "file.zip").read_bytes() == b"ZIPBYTES11"
     assert store.coverage_row("steps", eng.anchor(),
@@ -236,10 +239,11 @@ def test_sparse_probe_sets_global_anchor_at_min(tmp_path, clean_state):
                   "weight", "weight_goals", "wellness_activities", "weight_all"):
         fake.ranged_script[other] = era_script(*EMPTY_ERA)
     anchor = eng._sparse_probe()
-    # the oldest family's era wins, snapped to its probe-window start (biased
-    # early, §3.2): era 40 days back lands in the previous month
-    expected = (today - dt.timedelta(days=40)).replace(day=1)
-    assert anchor == expected, (anchor, expected)
+    # the oldest family's era wins (§3.2): the anchor is biased early, so the
+    # era's first day (40 days back) lies inside [anchor, anchor + 6]
+    era_start = today - dt.timedelta(days=40)
+    assert anchor is not None and anchor <= era_start <= anchor + dt.timedelta(days=6), (
+        anchor, era_start)
 
 
 def test_preera_404_recorded_as_empty_marker(tmp_path, clean_state):

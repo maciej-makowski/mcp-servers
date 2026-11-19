@@ -120,7 +120,7 @@ def test_streams_downsampled_by_default(api):
     def handler(path, params):
         assert path == "/activities/9/streams"
         assert params["key_by_type"] == "true"
-        assert params["keys"] == list(tools.STREAM_KEYS)
+        assert params["keys"] == ",".join(tools.STREAM_KEYS)  # CSV since the under-fetch fix
         return {
             "time": {"type": "time", "data": series},
             "latlng": {"type": "latlng", "data": [[1, 2]] * 2500},

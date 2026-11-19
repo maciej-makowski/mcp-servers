@@ -1,6 +1,6 @@
 # strava-mcp
 
-A local, self-written MCP server that wraps the official **Strava v3 REST API** and exposes **read-only** access to an MCP client (Hermes Agent) as three tools: `strava_athlete`, `strava_activities`, `strava_rate_status`. It serves streamable HTTP on host loopback 8016 and runs as the `mcp-strava` rootless-podman quadlet under the nologin `mcp` user, the same pattern as the other four servers in this repo.
+A local, self-written MCP server that wraps the official **Strava v3 REST API** and exposes **read-only** access to an MCP client (Hermes Agent) as four tools: `strava_athlete`, `strava_activities`, `strava_rate_status`, and the local store's `strava_sync`. It serves streamable HTTP on host loopback 8016 and runs as the `mcp-strava` rootless-podman quadlet under the nologin `mcp` user, the same pattern as the other four servers in this repo.
 
 No third-party connector is involved. Strava's official MCP connector (mcp.strava.com) only accepts Anthropic and Google clients: its dynamic client registration rejected every self-registration attempt (evidence record W20 in the design repo), and Strava's own FAQ names Claude and Gemini as the only supported assistants. The v3 REST API stays open to self-registered applications, so this wrapper talks to that API directly. Design and decision record: `ADOPTED/strava-design-final.md` in `maciej-makowski/hermes-designs` (Rev 8, adopted 2026-11-07).
 
@@ -11,7 +11,7 @@ Every call takes one path through the same guard-and-send pipeline (`client.py`)
 1. Hermes calls a tool over streamable HTTP at `/mcp`, carrying the `MCP_BEARER` header. The shared `require_bearer` middleware answers 401 to anything else, and the quadlet publishes the port on `127.0.0.1` only.
 2. The tool layer validates parameters locally. An unknown action or a missing id fails as a structured validation error; no request reaches Strava.
 3. The rate guard checks the two buckets (15 minutes and day) before any request. At or below its reserve it refuses with the wait, so no request is spent.
-4. The client sends `GET https://www.strava.com/api/v3/...` with the stored access token as the Bearer credential. Every response's `X-RateLimit` and `X-ReadRateLimit` headers update the tracker, so the budgets follow Strava's real numbers.
+4. The client sends `GET <base-url>/...` with the stored access token as the Bearer credential. The base URL is `https://www.strava.com/api/v3` unless the `STRAVA_API_BASE_URL` env var overrides it. Every response's `X-RateLimit` and `X-ReadRateLimit` headers update the tracker, so the budgets follow Strava's real numbers.
 5. A 401 triggers exactly one token refresh and one retry; a second 401 surfaces as an auth failure. A 429 becomes a structured `rate_limited` result carrying the wait-to-reset; the server never retries internally, the caller decides.
 6. Any other upstream failure comes back as a structured dict with the upstream status, so Strava's own error fields stay visible to the agent.
 
@@ -20,7 +20,7 @@ Every call takes one path through the same guard-and-send pipeline (`client.py`)
 - The store lives at `/app/data/token.json` in the container. The quadlet mounts the mcp-owned host directory `/home/mcp/strava-token` there.
 - Writes are atomic (temp file plus `os.replace`) and single-flight under `fcntl.flock`: Strava rotates the refresh token on every refresh and invalidates the previous one, so a mid-write crash must never destroy the store.
 - An idle refresh fires when the access token is under one hour from expiry; access tokens rotate every six hours.
-- Scopes: `read,profile:read_all,activity:read_all`. That covers profile, heart-rate zones, every activity including Only-You private ones, and streams. Adding `read_all` later costs one attended re-authorization.
+- Scopes: `read,profile:read_all,activity:read_all` by default; the env file's `STRAVA_OAUTH_SCOPES` overrides it. That covers profile, heart-rate zones, every activity including Only-You private ones, and streams. Adding `read_all` later costs one attended re-authorization.
 - First authorization is the manual code-paste flow: the `strava_mcp.authorize` helper prints the authorization URL, exchanges the pasted code, writes the store, and prints success without echoing any token value. It is a plain code exchange with client id and client secret; the v3 application flow carries no PKCE.
 
 ### Audit
@@ -34,6 +34,7 @@ Every tool call goes through the house `log_call` decorator: redacted arguments,
 | `strava_athlete` | `get`, `zones`, `stats` | `GET /athlete`, `GET /athlete/zones`, `GET /athletes/{id}/stats` |
 | `strava_activities` | `list`, `get`, `streams`, `zones`, `laps` | `GET /athlete/activities`, `GET /activities/{id}` plus `/streams`, `/zones`, `/laps` |
 | `strava_rate_status` | `status` | none (reads the local tracker, makes no API call) |
+| `strava_sync` | `status`, `trigger` | none (store bookkeeping; makes no API call) |
 
 Every call takes `{"action": ..., "params": {...}}`. All actions are reads; the server exposes no write endpoint of any kind.
 
@@ -63,15 +64,19 @@ Every call takes `{"action": ..., "params": {...}}`. All actions are reads; the 
 
 ## The underlying API
 
-- Strava REST API v3, base `https://www.strava.com/api/v3`. Reference: [developers.strava.com/docs/reference](https://developers.strava.com/docs/reference/). The endpoints used are exactly the ones in the table above; nothing else is called.
+- Strava REST API v3, base `https://www.strava.com/api/v3` (the default; `STRAVA_API_BASE_URL` overrides it for the 2027 migration to `https://api-v3.strava.com`). Reference: [developers.strava.com/docs/reference](https://developers.strava.com/docs/reference/). The endpoints exposed as tool actions are exactly the ones in the table above. The store sync additionally reads zones, gear, and (after the attended read_all re-authorization) starred segments and routes over the same base; none of those are exposed as tool actions.
 - OAuth 2.0: authorize at `https://www.strava.com/oauth/authorize`, exchange and refresh at `https://www.strava.com/oauth/token` (form-encoded, `grant_type` of `authorization_code` or `refresh_token`). The exchange response carries the athlete object, which supplies the `stats` default id.
 - Rate limits: Strava documents 100 reads per 15 minutes and 1,000 per day, with exact remaining values in the `X-RateLimit` headers. The tracker reads those headers on every response and refuses at the reserves (10 of the 100-per-15-minute bucket, 100 of the 1,000-per-day bucket); a future bulk job would cap at 60 requests per 15-minute window.
 - The v3 API also has write endpoints (kudos, comments, manual activity logging). They are deliberately not exposed here; they are future extension rows in the design doc.
 
+## The local store and sync
+
+The strava-local-store design (ADOPTED/strava-local-store-design-final.md, Rev 6, in maciej-makowski/hermes-designs) adds a local store at `/app/store` (the mounted `/home/mcp/strava-store`, 0700): a SQLite index plus flat per-activity JSON files and photos. One sync runs inside this server process (no second process, no second token writer), tiered per endpoint family (activities/athlete/stats every 6 h by default, zones/gear every 24 h, a weekly reconciliation sweep, and a trigger-only first backfill), paced at 60 requests per quarter-hour and always behind the same rate guard as the tools. The `strava_sync` tool is its manual surface; `STRAVA_SYNC_ENABLED` (default false) gates every batch until the operator's go.
+
 ## Deploy and registration
 
 - Image: `ghcr.io/maciej-makowski/mcp-strava:latest` plus a per-commit sha tag (amd64 and arm64). Quadlet: `deploy/mcp-strava.container`, published on `127.0.0.1:8016` only.
-- Env: copy `deploy/strava.env.example` to `/home/mcp/env/strava.env` (0600, owned by `mcp`) and fill `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET` and `MCP_BEARER` (plus `MCP_HOST` and `MCP_PORT`). Secret values never enter this repo. Rotation and re-auth runbooks live in [`deploy/KEY-ROTATION.md`](../deploy/KEY-ROTATION.md).
+- Env: copy `deploy/strava.env.example` to `/home/mcp/env/strava.env` (0600, owned by `mcp`) and fill `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET` and `MCP_BEARER` (plus `MCP_HOST` and `MCP_PORT`). Secret values never enter this repo. Rotation and re-auth runbooks live in [`deploy/KEY-ROTATION.md`](../deploy/KEY-ROTATION.md). `STRAVA_API_BASE_URL` (unset by default) overrides the API base URL for the 2027 migration to `https://api-v3.strava.com` — leave it unset until the flip; see the env example's migration block.
 - First authorization, once the container runs: the "Strava re-auth" runbook in `deploy/KEY-ROTATION.md` runs `uv run --no-sync python -m strava_mcp.authorize` inside the container via `podman exec`. Authorize in the browser, paste the code.
 - Hermes registration: `mcp_servers.strava.url` of `http://127.0.0.1:8016/mcp`, an `Authorization` header carrying the same bearer value that Hermes's `.env` stores as `STRAVA_MCP_BEARER`, timeout 120. The full rollout ladder lives in the design doc.
 - Quick check against a running container:
@@ -86,5 +91,5 @@ curl -s http://127.0.0.1:8016/mcp \
 ## Development
 
 ```sh
-uv run --extra dev pytest    # 76 tests; every upstream HTTP interaction is mocked, no network in tests
+uv run --extra dev pytest    # 110 tests; every upstream HTTP interaction is mocked, no network in tests
 ```

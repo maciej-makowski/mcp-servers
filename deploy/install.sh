@@ -7,6 +7,14 @@
 #   sudo -u mcp deploy/install.sh
 # — root acting for mcp is fine; podman is rootless either way).
 #
+# Usage: install.sh [service]
+#   No argument installs/recreates all six services (the historical
+#   behaviour). One argument (e.g. `install.sh mcp-strava`) touches ONLY
+#   that service: it pulls its image, installs its quadlet, recreates the
+#   unit, and verifies just that port — so a single-service rollout keeps
+#   the blast radius at one container (strava-local-store design, rollout
+#   step 3). An unknown service name aborts loudly.
+#
 # STAGING: run from an mcp-accessible cwd. sudo inherits the caller's cwd
 # and the mcp user cannot traverse /home/hermes, so a checkout living there
 # must be staged first (from the repo root):
@@ -16,7 +24,7 @@
 # script was fired straight from the clone).
 #
 # What it does:
-#   1. pulls the 6 multi-arch images from ghcr.io (google/outlook/notion for
+#   1. pulls the multi-arch images from ghcr.io (google/outlook/notion for
 #      the quadlets, plus mcp-proton, mcp-strava and mcp-garmin);
 #   2. installs the .container files into ~/.config/containers/systemd/;
 #   3. systemd --user daemon-reload;
@@ -41,7 +49,6 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
 fi
 
 GHCR=ghcr.io/maciej-makowski
-IMAGES=("$GHCR/mcp-google:latest" "$GHCR/mcp-outlook:latest" "$GHCR/mcp-notion:latest" "$GHCR/mcp-proton:latest" "$GHCR/mcp-strava:latest" "$GHCR/mcp-garmin:latest")
 
 SERVICES=(
   "mcp-google:8011:%h/env/google.env"
@@ -55,6 +62,19 @@ SERVICES=(
 UNIT_DIR="$HOME/.config/containers/systemd"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Optional single-service argument (see the usage comment above).
+ONLY="${1:-}"
+want() { [ -z "$ONLY" ] || [ "$1" = "$ONLY" ]; }
+if [ -n "$ONLY" ]; then
+  match=""
+  for svc_port_env in "${SERVICES[@]}"; do
+    if [ "${svc_port_env%%:*}" = "$ONLY" ]; then match=1; fi
+  done
+  if [ -z "$match" ]; then
+    fail "unknown service '$ONLY' (known: ${SERVICES[*]%%:*})"
+  fi
+fi
+
 # Expand %h the way systemd would (the env file names in SERVICES use %h).
 expand_h() { printf '%s\n' "${1/\%h/$HOME}"; }
 
@@ -66,13 +86,16 @@ log() { printf '[install] %s\n' "$*"; }
 fail() { printf '[install] FATAL: %s\n' "$*" >&2; exit 1; }
 
 # --------------------------------------------------- idempotent strava dirs
-# The strava token store and its audit logs live in dedicated mcp-owned
-# directories. `install -d` is idempotent; -o/-g keep the ownership right
-# even when the script runs as root acting for mcp, so no manual chown is
-# needed (strava design section 3.2). Mode 700 keeps the token store
-# mcp-only, like the other token volumes.
+# The strava token store, the local store, and the audit logs live in
+# dedicated mcp-owned directories. `install -d` is idempotent; -o/-g keep
+# the ownership right even when the script runs as root acting for mcp, so
+# no manual chown is needed (strava design section 3.2; the store dir is
+# the strava-local-store design's D3). Mode 700 keeps the token store and
+# the store mcp-only, like the other token volumes.
 install -d -o mcp -g mcp -m 700 "$HOME/strava-token" "$HOME/mcp-logs/strava" \
   || fail "creating $HOME/strava-token and $HOME/mcp-logs/strava"
+install -d -o mcp -g mcp -m 700 "$HOME/strava-store" \
+  || fail "creating $HOME/strava-store"
 
 # --------------------------------------------------- idempotent garmin dirs
 # Garmin has no token store: the official Personal API key lives in the env
@@ -83,8 +106,11 @@ install -d -o mcp -g mcp -m 700 "$HOME/mcp-logs/garmin" \
   || fail "creating $HOME/mcp-logs/garmin"
 
 # ---------------------------------------------------------------- pull images
-log "pulling 6 images from ghcr (multi-arch, arm64 resolved)..."
-for img in "${IMAGES[@]}"; do
+log "pulling images from ghcr (multi-arch, arm64 resolved)..."
+for svc_port_env in "${SERVICES[@]}"; do
+  svc="${svc_port_env%%:*}"
+  want "$svc" || continue
+  img="$GHCR/$svc:latest"
   podman pull "$img" || fail "podman pull $img"
   log "  pulled $img"
 done
@@ -95,6 +121,7 @@ mkdir -p "$UNIT_DIR"
 chmod 700 "$UNIT_DIR"
 for svc_port_env in "${SERVICES[@]}"; do
   svc="${svc_port_env%%:*}"
+  want "$svc" || continue
   cp "$SCRIPT_DIR/$svc.container" "$UNIT_DIR/$svc.container" \
     || fail "installing $svc.container"
   chmod 600 "$UNIT_DIR/$svc.container"
@@ -108,12 +135,14 @@ systemctl --user daemon-reload || fail "daemon-reload"
 # pulled image.
 for svc_port_env in "${SERVICES[@]}"; do
   svc="${svc_port_env%%:*}"
+  want "$svc" || continue
   cname="$(name_of "$SCRIPT_DIR/$svc.container")"
   systemctl --user stop "$svc.service" 2>/dev/null || true
   podman rm -f "$cname" >/dev/null 2>&1 || true
 done
 for svc_port_env in "${SERVICES[@]}"; do
   svc="${svc_port_env%%:*}"
+  want "$svc" || continue
   systemctl --user start "$svc.service" || fail "start $svc.service"
   log "  started $svc.service"
 done
@@ -127,7 +156,7 @@ INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVers
 # passed via stdin config, never as a CLI argument, so it never lands on a
 # process cmdline (same rule the gateway itself follows).
 _mcp_probe_headers() {
-  printf 'header = "Authorization: Bearer %s"\n' "$1"
+  printf 'header = "Authorization: Bearer ***"\n' "$1"
   printf 'header = "Content-Type: application/json"\n'
   printf 'header = "Accept: application/json, text/event-stream"\n'
 }
@@ -175,6 +204,7 @@ verify_one() {
 # Poll each endpoint up to 30s (5 attempts x 6s) before declaring failure.
 for svc_port_env in "${SERVICES[@]}"; do
   IFS=':' read -r svc port envpath <<<"$svc_port_env"
+  want "$svc" || continue
   ok=""
   for attempt in 1 2 3 4 5; do
     if verify_one "$svc" "$port" "$(expand_h "$envpath")"; then ok=1; break; fi
