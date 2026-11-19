@@ -83,7 +83,7 @@ The strava-local-store design (ADOPTED/strava-local-store-design-final.md, Rev 6
 
 ```sh
 curl -s http://127.0.0.1:8016/mcp \
-  -H "Authorization: Bearer ***" \
+  -H "Authorization: Bearer $MCP_BEARER" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
