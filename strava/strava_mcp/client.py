@@ -16,13 +16,39 @@ No network happens at import time; tests swap in httpx.MockTransport.
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 import httpx
 
 from . import oauth, rate
 
-BASE_URL = "https://www.strava.com/api/v3"
+log = logging.getLogger("mcp.strava.client")
+
+DEFAULT_BASE_URL = "https://www.strava.com/api/v3"
+
+
+def _base_url() -> str:
+    """The API base URL; STRAVA_API_BASE_URL overrides it.
+
+    The override exists for the 2027 migration: the changelog moves the v3
+    API from www.strava.com/api/v3 to https://api-v3.strava.com, whose host
+    is available from January 4, 2027 (the old host serves until the
+    switch deadline). Until the flip the env stays unset. A set value must
+    carry an http(s):// scheme - anything else refuses to boot loudly
+    rather than silently sending traffic to a typo'd host.
+    """
+    raw = os.environ.get("STRAVA_API_BASE_URL", "").strip()
+    if raw and not raw.startswith(("http://", "https://")):
+        raise ValueError(
+            f"STRAVA_API_BASE_URL must start with http(s)://; got {raw!r}"
+        )
+    return raw or DEFAULT_BASE_URL
+
+
+BASE_URL = _base_url()
+log.info("strava api base url: %s", BASE_URL)
 REQUEST_TIMEOUT_S = 60.0
 
 
