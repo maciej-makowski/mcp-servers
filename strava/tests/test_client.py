@@ -3,6 +3,9 @@
 No network: httpx.MockTransport stands in for the Strava API (house rule).
 """
 
+import importlib
+import os
+
 import httpx
 import pytest
 
@@ -146,3 +149,50 @@ def test_upstream_4xx_carries_status_and_body(monkeypatch):
         client.api_get("/athlete")
     assert exc.value.status == 403
     assert "Forbidden" in exc.value.body
+
+
+# --- base URL selection (the 2027 api-v3.strava.com migration) -------------
+
+ENV_VAR = "STRAVA_API_BASE_URL"
+
+
+def _reload_with_env(value: str | None) -> str:
+    """Set the env var (None = unset), reload client, snapshot BASE_URL.
+
+    Returns the VALUE, not the module: the restoring reload in the finally
+    block re-executes the same module object in place, so a returned module
+    reference would already carry the restored default. The restore runs
+    even on failure so later tests never inherit this test's env value.
+    """
+    old = os.environ.get(ENV_VAR)
+    try:
+        if value is None:
+            os.environ.pop(ENV_VAR, None)
+        else:
+            os.environ[ENV_VAR] = value
+        importlib.reload(client)
+        return client.BASE_URL
+    finally:
+        if old is None:
+            os.environ.pop(ENV_VAR, None)
+        else:
+            os.environ[ENV_VAR] = old
+        importlib.reload(client)
+
+
+def test_base_url_default_is_the_current_host():
+    assert _reload_with_env(None) == "https://www.strava.com/api/v3"
+
+
+def test_base_url_env_override():
+    assert _reload_with_env("https://api-v3.strava.com") == "https://api-v3.strava.com"
+
+
+def test_base_url_blank_value_falls_back_to_default():
+    assert _reload_with_env("   ") == "https://www.strava.com/api/v3"
+
+
+def test_base_url_without_scheme_refuses_to_boot():
+    with pytest.raises(ValueError) as exc:
+        _reload_with_env("api-v3.strava.com")
+    assert "STRAVA_API_BASE_URL" in str(exc.value)
