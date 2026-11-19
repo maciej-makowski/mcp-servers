@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# garmin-archive-backup.sh — nightly off-host backup of the Garmin local archive.
+# garmin-archive-backup.sh — nightly off-host backup of the Garmin local archive (carriage via the proton MCP relay, Rev 9 M9).
 #
 # Implements garmin-local-archive-design-final.md (Rev 7 ADOPTED) §6.1 steps
 # 1-8 on the matrix-offsite rails (P9): stamp dir + SHA256SUMS + manifest,
@@ -10,6 +10,7 @@
 #
 # Deploy (root; this repo ships the script, the box gets the cron):
 #   install -o root -g root -m 0700 garmin-archive-backup.sh /usr/local/sbin/
+#   install -o root -g root -m 0700 garmin-mcp-relay.py /usr/local/sbin/
 #   /etc/cron.d/garmin-archive:  47 4 * * * root /usr/local/sbin/garmin-archive-backup.sh >> /var/log/garmin-archive.log 2>&1
 # One-time prerequisite: the /garmin-backups Drive folder exists
 # (the script creates it on first run when missing; the matrix doc's lesson).
@@ -23,7 +24,7 @@ STORE_DIR=/home/mcp/garmin-store
 STAMP_ROOT=/srv/backups/garmin
 LOG=/var/log/garmin-archive.log
 AGE_RECIPIENT_FILE=/etc/matrix-backup/age-recipient
-PROTON=/home/hermes/.hermes/bin/proton
+RELAY_PY=/usr/local/sbin/garmin-mcp-relay.py
 KEEP_LOCAL=7
 KEEP_DRIVE_DAYS=14
 DATE=$(date +%F)
@@ -101,37 +102,106 @@ if ! age -r "$AGE_RECIPIENT" -o "$AGE_FILE" "$TARBALL"; then
   exit 1
 fi
 shred -u "$TARBALL" 2>/dev/null || rm -f -- "$TARBALL"
-# chown hermes:hermes on the .age right after encryption: the hermes-side
-# proton CLI must read it (inherited errata lesson, matrix doc step 4).
-chown hermes:hermes "$AGE_FILE"
 
-# Step 5: upload as hermes via the proton CLI. The Drive folder is created
-# once when missing; without it the first upload fails not-found (matrix doc
-# §3.1 prerequisite, same lesson).
-if ! runuser -u hermes -- env PROTON_NO_UPDATE_CHECK=1 "$PROTON" drive items list \
-    /garmin-backups --output json >/dev/null 2>&1; then
-  log "note: /garmin-backups not listable; creating it"
-  runuser -u hermes -- env PROTON_NO_UPDATE_CHECK=1 "$PROTON" drive items create \
-    /garmin-backups --output json --no-input >>"$LOG" 2>&1 || true
-fi
-if runuser -u hermes -- env PROTON_NO_UPDATE_CHECK=1 "$PROTON" drive items upload \
-    "$AGE_FILE" /garmin-backups --if-exists replace --output json --no-input \
-    >>"$LOG" 2>&1; then
-  rm -f -- "$AGE_FILE"
-  log "UPLOADED garmin-archive-$DATE"
-else
-  # §6.1 step 7: the local stamp survives; the missing UPLOADED line for
-  # today is exactly what the 09:43 checker alarms on.
-  log "ERROR: proton upload failed (local stamp kept: $STAMP)"
+# Step 5: upload through the proton MCP relay (design Rev 9 M9). The
+# hermes-side proton CLI was offboarded 2026-11-05; the artifact is staged
+# root-owned 0644 into the shared spool (mounted into the proton container)
+# and the upload runs as a loopback tools/call. The bearer is read from the
+# proton env file as root and exported for the relay helper; it is never
+# echoed. The /garmin-backups folder is a one-time manual create (the MCP
+# exposes no folder-create verb); a missing folder fails loudly here and
+# the 09:43 checker alarms on the missing sentinel.
+if [ ! -x "$RELAY_PY" ]; then
+  log "ERROR: relay helper $RELAY_PY missing (deploy/ install step)"
   rm -f -- "$AGE_FILE"
   exit 1
 fi
+MCP_RELAY_BEARER="$(grep -E '^MCP_BEARER=' /home/mcp/env/proton.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+if [ -z "$MCP_RELAY_BEARER" ]; then
+  log "ERROR: MCP_BEARER missing from /home/mcp/env/proton.env"
+  rm -f -- "$AGE_FILE"
+  exit 1
+fi
+export MCP_RELAY_BEARER
+STAGE="/srv/mcp_files/send/garmin-archive-$DATE.age"
+EXPECTED_SIZE=$(stat -c %s "$AGE_FILE")
+install -m 0644 "$AGE_FILE" "$STAGE" \
+  || { log "ERROR: spool stage failed"; rm -f -- "$AGE_FILE"; exit 1; }
+UP_OUT="$(python3 "$RELAY_PY" \
+  "$(printf '{"action":"upload","params":{"path":"%s","dir":"/garmin-backups","if_exists":"replace"}}' "$STAGE")" 2>&1)"
+if [ $? -ne 0 ]; then
+  # §6.1 step 7: the local stamp survives; the missing UPLOADED line for
+  # today is exactly what the 09:43 checker alarms on.
+  log "ERROR: proton upload failed via relay (local stamp kept: $STAMP); relay: ${UP_OUT:0:300}"
+  rm -f -- "$STAGE" "$AGE_FILE"
+  exit 1
+fi
+# verify the committed name and size against the staged bytes before the
+# sentinel (Rev 9 M9)
+VERIFY="$(printf '%s' "$UP_OUT" | python3 - "$EXPECTED_SIZE" "garmin-archive-$DATE.age" <<'PY'
+import json, sys
+size = int(sys.argv[1])
+want = sys.argv[2]
+try:
+    stack = [json.loads(sys.stdin.read())]
+except ValueError:
+    stack = []
+found = {}
+while stack:
+    node = stack.pop()
+    if isinstance(node, dict):
+        if "name" in node and "size" in node and not found:
+            found = node
+        stack.extend(node.values())
+    elif isinstance(node, list):
+        stack.extend(node)
+if found.get("name") == want and found.get("size") == size:
+    print("OK")
+else:
+    print("MISMATCH name=%r size=%r (expected %r/%d)"
+          % (found.get("name"), found.get("size"), want, size))
+PY
+)"
+if [ "$VERIFY" != "OK" ]; then
+  log "ERROR: upload verification failed: $VERIFY (local stamp kept: $STAMP)"
+  rm -f -- "$STAGE" "$AGE_FILE"
+  exit 1
+fi
+rm -f -- "$STAGE" "$AGE_FILE"
+log "UPLOADED garmin-archive-$DATE"
 
-# Step 6: Drive-side prune, 14 d (decided M1/OD-5), age predicate included,
-# scoped to /garmin-backups so the matrix patterns never touch these names
-# and vice versa (P8: two pipelines, disjoint namespaces, one Drive account).
-runuser -u hermes -- env PROTON_NO_UPDATE_CHECK=1 "$PROTON" drive items delete \
-  --scope /garmin-backups --pattern 'garmin-archive-*.age' --older-than 14d \
-  --yes --output json >>"$LOG" 2>&1 || log "WARN: drive prune failed (non-fatal)"
+# Step 6: Drive-side prune through the relay (Rev 9 M9). Retention 14 d
+# (decided M1/OD-5); the CLI's pattern+age delete has no MCP equivalent, so
+# the script composes it: one relay list, a client-side filter that parses
+# the stamp date out of each garmin-archive-<date>.age name, then one gated
+# trash per batch with confirm=true as the script's standing operator
+# approval (recorded in the design). A failing prune never blocks anything:
+# the checker's retention assertion (Rev 9) alarms on drift.
+PRUNE_REFS="$(python3 "$RELAY_PY" '{"action":"list","params":{"dir":"/garmin-backups"}}' 2>/dev/null | python3 -c '
+import datetime as dt, json, sys
+cutoff = (dt.date.today() - dt.timedelta(days=14)).isoformat()
+try:
+    data = json.loads(sys.stdin.read())
+except ValueError:
+    raise SystemExit
+items = data if isinstance(data, list) else data.get("items") or data.get("results") or []
+refs = []
+for item in items:
+    if not isinstance(item, dict):
+        continue
+    name = str(item.get("name") or "")
+    if not name.startswith("garmin-archive-") or not name.endswith(".age"):
+        continue
+    day = name[len("garmin-archive-"):-len(".age")]
+    if day < cutoff and item.get("link_id"):
+        refs.append(item["link_id"])
+print(json.dumps(refs))')"
+if [ -n "$PRUNE_REFS" ] && [ "$PRUNE_REFS" != "[]" ]; then
+  TRASH_OUT="$(python3 "$RELAY_PY" \
+    "$(printf '{"action":"trash","params":{"refs":%s},"confirm":true}' "$PRUNE_REFS")" 2>>"$LOG")"
+  log "drive prune: trashed older-than-14d stamps (trash relay rc $?; out: ${TRASH_OUT:0:120})"
+else
+  log "drive prune: nothing older than 14 d"
+fi
 
 log "=== garmin-archive-backup done $DATE"
