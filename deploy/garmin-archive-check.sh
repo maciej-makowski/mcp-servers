@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # garmin-archive-check.sh — daily layer-2 staleness check for the garmin
-# archive backup (garmin-local-archive-design-final.md Rev 7 §6.1 step 9).
+# archive backup (garmin-local-archive-design-final.md Rev 9 §6.1 step 9;
+# the Drive listing rides the proton MCP relay, M9).
 #
 # INDEPENDENT of the backup pipeline (the matrix doc's layer-2 shape: a
 # separate process, so a dead backup pipeline is caught by an alive checker).
-# It asserts BOTH of:
+# It asserts THREE of:
 #   1. today's sentinel line "UPLOADED garmin-archive-<date>" in
-#      /var/log/garmin-archive.log, and
-#   2. the newest Drive-side garmin-archive-*.age is under 48 h old
-#      (a Drive-side check, because a silently-expired Proton session fails
-#      exactly here).
+#      /var/log/garmin-archive.log,
+#   2. the newest Drive-side garmin-archive-*.age is under 48 h old, and
+#   3. no retained garmin-archive-*.age is older than 14 d (the prune's own
+#      promise; the listing comes through the proton MCP relay, because a
+#      silently-expired Proton session fails exactly here).
 # It writes the result to state/backup-status.json in the store dir on BOTH
 # outcomes (mode 0644, atomic temp+rename so a mid-write read never serves a
 # truncated file), and on failure notifies via the Hermes bot hook
@@ -19,6 +21,7 @@
 #
 # Deploy (root):
 #   install -o root -g root -m 0700 garmin-archive-check.sh /usr/local/sbin/
+#   install -o root -g root -m 0700 garmin-mcp-relay.py /usr/local/sbin/
 #   /etc/cron.d/garmin-archive-check:  43 9 * * * root /usr/local/sbin/garmin-archive-check.sh >> /var/log/garmin-archive-check.log 2>&1
 set -u
 # Full PATH export (inherited errata lesson; see garmin-archive-backup.sh).
@@ -28,7 +31,7 @@ umask 077
 STORE_DIR=/home/mcp/garmin-store
 LOG=/var/log/garmin-archive.log
 STATUS_FILE="$STORE_DIR/state/backup-status.json"
-PROTON=/home/hermes/.hermes/bin/proton
+RELAY_PY=/usr/local/sbin/garmin-mcp-relay.py
 NOTIFY_HOOK=/etc/garmin-archive/notify.sh
 TODAY=$(date +%F)
 YESTERDAY=$(date -d yesterday +%F 2>/dev/null || date -v-1d +%F)
@@ -43,28 +46,34 @@ if [ -r "$LOG" ] && grep -q "UPLOADED garmin-archive-$TODAY" "$LOG"; then
   SENTINEL_OK=1
 fi
 
-# Assertion 2: the newest Drive-side garmin-archive-*.age is under 48 h old.
+# Assertion 2 (and the Rev 9 retention assertion): the Drive-side listing
+# comes through the proton MCP relay (design Rev 9 M9; the CLI is offboarded).
+MCP_RELAY_BEARER="$(grep -E '^MCP_BEARER=' /home/mcp/env/proton.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+export MCP_RELAY_BEARER
 DRIVE_JSON=""
 NEWEST_ITEM=""
 NEWEST_DATE=""
 NEWEST_OK=0
-if runuser -u hermes -- env PROTON_NO_UPDATE_CHECK=1 "$PROTON" drive items list \
-    /garmin-backups --output json > /tmp/garmin-drive-list.$$.json 2>>/tmp/garmin-drive-list.$$.err; then
+if LIST_OUT="$(python3 "$RELAY_PY" '{"action":"list","params":{"dir":"/garmin-backups"}}' 2>/tmp/garmin-drive-list.$$.err)" \
+   && printf '%s\n' "$LIST_OUT" > /tmp/garmin-drive-list.$$.json; then
   DRIVE_JSON=/tmp/garmin-drive-list.$$.json
 else
-  log "WARN: proton drive list failed (session or folder problem)"
+  log "WARN: proton relay drive list failed (transport, auth, or folder problem)"
   DRIVE_JSON=/tmp/garmin-drive-list.$$.err
 fi
 # The newest item is read from the list; name format garmin-archive-<date>.age.
-eval "$(python3 - "$DRIVE_JSON" <<'PY' 2>/dev/null || echo "NEWEST_ITEM=; NEWEST_DATE="
+# The same pass emits the oldest retained stamp date for the Rev 9 retention
+# assertion (no garmin-archive-*.age older than 14 d).
+eval "$(python3 - "$DRIVE_JSON" <<'PY' 2>/dev/null || echo "NEWEST_ITEM=; NEWEST_DATE=; OLDEST_DATE="
 import json, re, sys
 try:
     data = json.load(open(sys.argv[1]))
 except Exception:
-    print("NEWEST_ITEM=''; NEWEST_DATE=''"); raise SystemExit
+    print("NEWEST_ITEM=''; NEWEST_DATE=''; OLDEST_DATE=''"); raise SystemExit
 items = data if isinstance(data, list) else data.get("items") or data.get("results") or []
 best = ""
 best_date = ""
+oldest = ""
 for item in items:
     if not isinstance(item, dict):
         continue
@@ -72,18 +81,28 @@ for item in items:
     match = re.fullmatch(r"garmin-archive-(\d{4}-\d{2}-\d{2})\.age", name)
     if not match:
         continue
-    if match.group(1) > best_date:
-        best_date = match.group(1)
+    day = match.group(1)
+    if day > best_date:
+        best_date = day
         best = name
-print(f"NEWEST_ITEM={best!r}; NEWEST_DATE={best_date!r}")
+    if not oldest or day < oldest:
+        oldest = day
+print(f"NEWEST_ITEM={best!r}; NEWEST_DATE={best_date!r}; OLDEST_DATE={oldest!r}")
 PY
 )"
 rm -f /tmp/garmin-drive-list.$$.json /tmp/garmin-drive-list.$$.err
 if [ -n "$NEWEST_DATE" ] && { [ "$NEWEST_DATE" = "$TODAY" ] || [ "$NEWEST_DATE" = "$YESTERDAY" ]; }; then
   NEWEST_OK=1
 fi
+# Rev 9 retention assertion: no garmin-archive-*.age older than 14 d (the
+# prune's own promise; a dead prune otherwise drifts invisibly).
+CUTOFF=$(date -d "14 days ago" +%F 2>/dev/null || date -v-14d +%F)
+RETENTION_OK=0
+if [ -z "$OLDEST_DATE" ] || [ "$OLDEST_DATE" \> "$CUTOFF" ] || [ "$OLDEST_DATE" = "$CUTOFF" ]; then
+  RETENTION_OK=1
+fi
 
-if [ "$SENTINEL_OK" = 1 ] && [ "$NEWEST_OK" = 1 ]; then
+if [ "$SENTINEL_OK" = 1 ] && [ "$NEWEST_OK" = 1 ] && [ "$RETENTION_OK" = 1 ]; then
   HEALTHY=true
   REASON="ok"
 else
@@ -91,6 +110,7 @@ else
   REASON=""
   [ "$SENTINEL_OK" = 1 ] || REASON="today's UPLOADED sentinel missing in $LOG"
   [ "$NEWEST_OK" = 1 ] || REASON="$REASON${REASON:+; }newest Drive item not under 48 h ($NEWEST_DATE)"
+  [ "$RETENTION_OK" = 1 ] || REASON="$REASON${REASON:+; }oldest retained stamp older than 14 d ($OLDEST_DATE; cutoff $CUTOFF)"
 fi
 
 LAST_UPLOAD="$NEWEST_DATE"
