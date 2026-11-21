@@ -475,6 +475,73 @@ def test_drive_list_and_trash_argv(rec):
     assert args[:4] == ["drive", "items", "trash", "9"]
 
 
+# --- drive list paging: optional --limit/--page (the relay's whole-folder +
+# paged reads; the CLI counts pages from zero and treats limit 0 as "all") ----
+
+
+def test_drive_list_paging_argv(rec):
+    """Both params map to the CLI's flags: `--limit` then `--page` (the
+    photos/drafts list flag order), after the dir positional."""
+    tools.DRIVE_TOOL.dispatch(
+        "list", {"dir": "/matrix-backups", "limit": 100, "page": 2}
+    )
+    assert tail_without_globals(rec["argv"]) == [
+        "drive", "items", "list", "/matrix-backups", "--limit", "100", "--page", "2",
+    ]
+
+
+def test_drive_list_paging_absent_unchanged_argv(rec):
+    """Neither param present: the argv is byte-identical to the pre-paging
+    shape, with and without a dir positional."""
+    tools.DRIVE_TOOL.dispatch("list", {"dir": "/docs"})
+    assert tail_without_globals(rec["argv"]) == ["drive", "items", "list", "/docs"]
+    tools.DRIVE_TOOL.dispatch("list", {})
+    assert tail_without_globals(rec["argv"]) == ["drive", "items", "list"]
+
+
+def test_drive_list_limit_zero_lists_whole_folder(rec):
+    """limit 0 is legal (the CLI's '0 for all of them')."""
+    tools.DRIVE_TOOL.dispatch("list", {"dir": "/matrix-backups", "limit": 0})
+    args = tail_without_globals(rec["argv"])
+    i = args.index("--limit")
+    assert args[i + 1] == "0"
+    assert "--page" not in args
+
+
+def test_drive_list_page_zero_emitted(rec):
+    """page 0 is an explicit first page and still reaches argv (a present 0
+    is not treated as absent)."""
+    tools.DRIVE_TOOL.dispatch("list", {"limit": 50, "page": 0})
+    args = tail_without_globals(rec["argv"])
+    assert args == ["drive", "items", "list", "--limit", "50", "--page", "0"]
+
+
+@pytest.mark.parametrize(
+    "params, needle",
+    [
+        ({"limit": -1}, "limit"),
+        ({"page": -1}, "page"),
+        ({"limit": "50"}, "limit"),
+        ({"limit": 1.5}, "limit"),
+        ({"limit": True}, "limit"),
+        ({"page": "1"}, "page"),
+        ({"page": 2.5}, "page"),
+        ({"page": False}, "page"),
+    ],
+)
+def test_drive_list_paging_validation(rec, params, needle):
+    """Non-integer or negative paging params refuse with a structured
+    validation error before the CLI runs (the CLI would refuse negatives
+    itself, but never at the cost of a spent CLI call)."""
+    r = tools.DRIVE_TOOL.dispatch("list", dict(params, dir="/matrix-backups"))
+    assert r["success"] is False
+    assert r["validation"] is True
+    assert needle in r["error"]
+    assert r["exit_code"] is None
+    assert r["auth_required"] is False
+    assert rec["argv"] == []
+
+
 # --- unknown action ----------------------------------------------------------------
 
 
