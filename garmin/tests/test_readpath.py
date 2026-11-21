@@ -423,7 +423,7 @@ def test_store_io_error_degrades_to_live(tmp_path, clean_tools, fake, monkeypatc
     out = tools.daily("2026-10-15", "2026-11-11", families="steps")
     assert out["errors"] == {}  # degraded to live, family served
     assert out["families"]["steps"]["present"] is True
-    live_calls = [c for c in fake.ranged_calls if len(c) == 4]  # tool-layer calls
+    live_calls = [c for c in fake.ranged_calls if len(c) == 4]  # tool-layer
     assert len(live_calls) == 1
 
 
