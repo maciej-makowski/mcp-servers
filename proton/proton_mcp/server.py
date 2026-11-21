@@ -506,7 +506,7 @@ def make_http_asgi(server: Any, bearer: str) -> Any:
     manager = StreamableHTTPSessionManager(app=server, json_response=True, stateless=True)
 
     async def handle_streamable_http(scope: Any, receive: Any, send: Any) -> None:
-        await manager.handle_request(scope, scope, receive, send)
+        await manager.handle_request(scope, receive, send)
 
     @asynccontextmanager
     async def lifespan(app: Any):
