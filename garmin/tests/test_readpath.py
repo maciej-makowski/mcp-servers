@@ -401,8 +401,8 @@ def test_trend_readthrough_uses_store(tmp_path, clean_tools, fake):
     assert bucket["week_start"] == week_start.isoformat()  # Monday-anchored
     in_window = [r for r in records if r["calendarDate"] >= week_start.isoformat()]
     assert bucket["days"] == len(in_window)
-    assert bucket["mean"]["totalSteps"] == round(
-        sum(r["totalSteps"] for r in in_window) / len(in_window), 3)
+    vals = [r["totalSteps"] for r in in_window if r["totalSteps"] is not None]
+    assert bucket["mean"]["totalSteps"] == round(sum(vals) / len(vals), 3)
     assert fake.ranged_calls == []
 
 

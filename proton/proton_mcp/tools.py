@@ -797,6 +797,30 @@ class DriveTool(_BaseTool):
             if params.get("dir"):
                 # CLI takes the drive folder as a positional PATH, not a flag.
                 args.append(str(params["dir"]))
+            # Optional paging (the CLI's --limit/--page): emitted only when
+            # present, so the absent-params argv stays unchanged. Flag order
+            # matches the photos list mapping (--limit then --page).
+            limit = params.get("limit")
+            if limit is not None:
+                err = _limit_error({"limit": limit})
+                if err:
+                    return self._validation_error(err)
+                if limit < 0:
+                    return self._validation_error(
+                        "'limit' must be >= 0 (0 lists the whole folder)"
+                    )
+                args += ["--limit", str(limit)]
+            page = params.get("page")
+            if page is not None:
+                if isinstance(page, bool) or not isinstance(page, int):
+                    return self._validation_error(
+                        f"'page' must be an integer, got {type(page).__name__}"
+                    )
+                if page < 0:
+                    return self._validation_error(
+                        "'page' must be >= 0 (pages count from zero)"
+                    )
+                args += ["--page", str(page)]
             return self._run(args)
         if action == "get":
             # The CLI's `drive items get` resolves its argument as a PATH,

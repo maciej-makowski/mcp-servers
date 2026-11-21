@@ -212,6 +212,17 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "id": {"type": "string", "description": "Item id or drive item path (get; the CLI resolves the argument as a path)"},
             "dir": {"type": "string", "description": "Drive directory (list) or destination dir (upload)"},
             "path": {"type": "string", "description": "Drive item path (download, get) or local file (upload)"},
+            "limit": {
+                "type": "integer",
+                "description": (
+                    "list: items per page; 0 lists the whole folder "
+                    "(default 50 per page when absent)"
+                ),
+            },
+            "page": {
+                "type": "integer",
+                "description": "list: page number, from zero",
+            },
             "if_exists": {
                 "type": "string",
                 "enum": ["replace", "rename", "skip"],
