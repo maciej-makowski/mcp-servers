@@ -76,6 +76,7 @@ __all__ = [
     "CALENDAR_TOOL",
     "DRIVE_TOOL",
     "DRIVE_DOWNLOAD_BUDGET_MB_DEFAULT",
+    "DRIVE_UPLOAD_TIMEOUT_S",
     "_drive_download_budget_mb",
     "_drive_download_timeout",
 ]
@@ -187,6 +188,17 @@ def _drive_download_budget_mb() -> int:
 
 def _drive_download_timeout(size_mb: int, budget_mb: int) -> int:
     return min(1800, max(60, min(size_mb, budget_mb) * 2))
+
+
+# --- drive uploads: the CLI-side timeout (the matrix offsite nightly) -------
+#
+# Uploads ran under the runner's 60 s subprocess default and the offsite
+# nightly's ~930 MB full-artifact upload died mid-transfer (TimeoutExpired,
+# non-JSON error envelope). 1800 s matches the relay helpers' MCP-side
+# contract (matrix-mcp-relay.py / garmin-mcp-relay.py), so the CLI budget
+# covers a transfer the relay is already willing to wait for; an explicit
+# timeout here beats the runner's PROTON_CLI_TIMEOUT env resolution.
+DRIVE_UPLOAD_TIMEOUT_S = 1800
 
 
 def _attach_shape_error(attach) -> str | None:
@@ -918,7 +930,9 @@ class DriveTool(_BaseTool):
                         "upload 'if_exists' must be one of: replace, rename, skip"
                     )
                 args += ["--if-exists", str(if_exists)]
-            return self._run(args, dry_run=dry_run)
+            # Large artifacts blow the 60 s runner default mid-transfer; the
+            # upload carries its own budget (DRIVE_UPLOAD_TIMEOUT_S) instead.
+            return self._run(args, dry_run=dry_run, timeout=DRIVE_UPLOAD_TIMEOUT_S)
         if action == "trash":
             refs = params.get("refs") or ([params["id"]] if params.get("id") else None)
             if not refs:

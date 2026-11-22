@@ -18,6 +18,7 @@ CLI's exit codes to a structured result dict.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,29 @@ PROTON_BIN = Path.home() / ".hermes" / "bin" / "proton"
 
 # Full argv of the last subprocess invocation (for the dry-run argv check).
 LAST_ARGV: list[str] | None = None
+
+# Subprocess timeout, resolved in run() in this order: the explicit
+# `timeout` argument, then the PROTON_CLI_TIMEOUT env var (integer seconds,
+# read at call time so tests and deploy config can repoint it), then this
+# default. Unset, malformed or non-positive env values all land on the
+# default (the download-budget helper's parsing rule): the wrapper never
+# crashes on a bad env value. The 60 s default killed the matrix offsite
+# nightly's ~930 MB drive upload mid-transfer; the upload action now pins
+# its own 1800 s budget (tools.py), matching the relay helpers' MCP-side
+# contract.
+DEFAULT_TIMEOUT = 60
+
+
+def _timeout_from_env() -> int:
+    raw = os.environ.get("PROTON_CLI_TIMEOUT")
+    if raw is None or not raw.strip():
+        return DEFAULT_TIMEOUT
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return DEFAULT_TIMEOUT
+    return value if value > 0 else DEFAULT_TIMEOUT
+
 
 EXIT_MEANINGS = {
     0: "ok",
@@ -59,16 +83,24 @@ def _result(
 def run(
     args: list[str],
     stdin_text: str | None = None,
-    timeout: int = 60,
+    timeout: int | None = None,
     dry_run: bool = False,
 ) -> dict:
-    """Run proton-cli with args, return a structured result dict."""
+    """Run proton-cli with args, return a structured result dict.
+
+    The subprocess timeout resolves at call time: an explicit `timeout`
+    argument wins, then the PROTON_CLI_TIMEOUT env var (integer seconds),
+    then the 60 s default — byte-identical behavior when neither is set.
+    """
     if not PROTON_BIN.exists():
         return _result(
             False,
             None,
             error=f"proton binary not found at {PROTON_BIN}; install proton-cli there.",
         )
+
+    if timeout is None:
+        timeout = _timeout_from_env()
 
     # Global flags first, then (gated calls only) --dry-run, then the verb
     # argv — see the module docstring for why the flags lead.
