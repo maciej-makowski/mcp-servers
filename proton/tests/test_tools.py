@@ -409,6 +409,57 @@ def test_upload_if_exists_invalid_value_rejected(rec, tmp_path):
     assert rec["argv"] == []
 
 
+# --- CLI timeout resolution (the offsite nightly's large uploads) -----------
+
+
+def test_drive_upload_pins_1800s_timeout(rec, tmp_path):
+    """Upload hands the runner an explicit 1800 s budget (the relay helpers'
+    MCP-side contract); the argv itself is unchanged."""
+    f = tmp_path / "big.bin"
+    f.write_text("x")
+    rec["proc"] = proc_json({"id": "9"})
+    r = tools.DRIVE_TOOL.dispatch(
+        "upload", {"path": str(f), "dir": "/docs", "confirm": True}
+    )
+    assert rec["timeout"] == 1800
+    args = tail_without_globals(rec["argv"])
+    assert args[:3] == ["drive", "items", "upload"] and str(f) in args
+    assert args[-1] == "/docs" and "--file" not in args and "--dir" not in args
+    assert r["applied"] is True
+
+
+def test_env_timeout_reaches_subprocess_on_reads(rec, monkeypatch):
+    """PROTON_CLI_TIMEOUT widens the budget for calls that carry no explicit
+    timeout: a read action's subprocess runs at the env's seconds."""
+    monkeypatch.setenv("PROTON_CLI_TIMEOUT", "99")
+    tools.DRIVE_TOOL.dispatch("list", {"dir": "/docs"})
+    assert rec["timeout"] == 99
+
+
+def test_unset_env_keeps_60s_default(rec, monkeypatch):
+    """No env var: byte-identical to the pre-change runner (60 s)."""
+    monkeypatch.delenv("PROTON_CLI_TIMEOUT", raising=False)
+    tools.DRIVE_TOOL.dispatch("list", {"dir": "/docs"})
+    assert rec["timeout"] == 60
+
+
+def test_explicit_timeout_beats_env(rec, monkeypatch):
+    """An explicit timeout argument wins over PROTON_CLI_TIMEOUT."""
+    monkeypatch.setenv("PROTON_CLI_TIMEOUT", "99")
+    rec["proc"] = make_proc()
+    runner.run(["mail", "messages", "list"], timeout=5)
+    assert rec["timeout"] == 5
+
+
+def test_malformed_env_falls_back_to_default(rec, monkeypatch):
+    """Malformed or non-positive env values land on 60 (the download-budget
+    helper's parsing rule): the wrapper never crashes on a bad env value."""
+    for bad in ("nonsense", "0", "-5", "  "):
+        monkeypatch.setenv("PROTON_CLI_TIMEOUT", bad)
+        tools.DRIVE_TOOL.dispatch("list", {"dir": "/docs"})
+        assert rec["timeout"] == 60
+
+
 def test_drive_get_accepts_path_target(rec):
     rec["proc"] = proc_json({"name": "DESIGN-INDEX.md"})
     tools.DRIVE_TOOL.dispatch("get", {"path": "/hermes-designs/DESIGN-INDEX.md"})
