@@ -128,7 +128,7 @@ EXPECTED_SIZE=$(stat -c %s "$AGE_FILE")
 install -m 0644 "$AGE_FILE" "$STAGE" \
   || { log "ERROR: spool stage failed"; rm -f -- "$AGE_FILE"; exit 1; }
 UP_OUT="$(python3 "$RELAY_PY" \
-  "$(printf '{"action":"upload","params":{"path":"%s","dir":"/garmin-backups","if_exists":"replace"}}' "$STAGE")" 2>&1)"
+  "$(printf '{"action":"upload","params":{"path":"%s","dir":"/garmin-backups","if_exists":"replace"},"confirm":true}' "$STAGE")" 2>&1)"
 if [ $? -ne 0 ]; then
   # §6.1 step 7: the local stamp survives; the missing UPLOADED line for
   # today is exactly what the 09:43 checker alarms on.
@@ -138,18 +138,21 @@ if [ $? -ne 0 ]; then
 fi
 # verify the committed name and size against the staged bytes before the
 # sentinel (Rev 9 M9)
-VERIFY="$(printf '%s' "$UP_OUT" | python3 - "$EXPECTED_SIZE" "garmin-archive-$DATE.age" <<'PY'
+VERIFY="$(python3 - "$EXPECTED_SIZE" "garmin-archive-$DATE.age" "$UP_OUT" <<'PY'
 import json, sys
 size = int(sys.argv[1])
 want = sys.argv[2]
 try:
-    stack = [json.loads(sys.stdin.read())]
+    stack = [json.loads(sys.argv[3])]
 except ValueError:
     stack = []
 found = {}
 while stack:
     node = stack.pop()
     if isinstance(node, dict):
+        # a gated preview envelope means nothing was committed: never bless it
+        if node.get("dry_run") is True or node.get("applied") is False:
+            continue
         if "name" in node and "size" in node and not found:
             found = node
         stack.extend(node.values())

@@ -10,13 +10,23 @@ through the MCP server, never through a CLI).
 The bearer arrives as MCP_RELAY_BEARER in the environment (the caller reads
 it from the proton env file as root); the helper never echoes it.
 
+Gated actions (upload, trash) MUST carry confirm=true as a top-level key of
+the arguments object (sibling of action/params) — the server's gate runs the
+CLI with --dry-run otherwise and moves nothing; this helper refuses that
+shape loudly before any transport.
+
 Usage: garmin-mcp-relay.py '<proton_drive arguments as JSON>'
        e.g. '{"action": "upload", "params": {"path": "/srv/mcp_files/send/x.age",
              "dir": "/garmin-backups", "if_exists": "replace"}}'
 
-stdout: the tool result's text payload verbatim (the proton_drive JSON).
+stdout: the tool result's payload (the proton_drive JSON) — the
+structuredContent envelope when the server carries it there, else the
+content text.
 Exit 0 on success; 1 on a tool-level error envelope; 2 on transport, auth,
-or handshake failure. stderr carries the diagnostics.
+or handshake failure; 2 also when a gated action (upload, trash) arrives
+without confirm=true (the server would dry-run and move nothing — refused
+here so a silent no-op can never pass as success). stderr carries the
+diagnostics.
 
 MCP_RELAY_URL overrides the endpoint (tests point it at a stub; production
 leaves it unset for the loopback default).
@@ -27,6 +37,8 @@ import sys
 import urllib.request
 
 URL = os.environ.get("MCP_RELAY_URL", "http://127.0.0.1:8010/mcp")
+
+GATED_ACTIONS = {"upload", "trash"}
 
 
 def _post(payload, session=None, bearer=None):
@@ -77,6 +89,17 @@ def main():
     except ValueError as exc:
         print("relay: arguments are not JSON: %s" % exc, file=sys.stderr)
         return 1
+    # The proton_drive tool gates its mutating actions: without confirm=true
+    # it runs the CLI with --dry-run and returns a preview envelope, moving
+    # nothing. A silent dry-run would strand a nightly backup behind an "ok"
+    # relay exit, so the refusal here is loud and structural (the 2026-11-20
+    # to 22 uploads stranded exactly this way: rc 0, three dry-runs).
+    action = arguments.get("action")
+    if action in GATED_ACTIONS and arguments.get("confirm") is not True:
+        print("relay: gated action %r needs confirm=true "
+              "(without it the server dry-runs and moves nothing)" % action,
+              file=sys.stderr)
+        return 2
 
     try:
         _sid, body = _post({
@@ -102,6 +125,15 @@ def main():
         print(json.dumps(resp["error"], indent=1), file=sys.stderr)
         return 2
     result = resp.get("result") or {}
+    # The server may carry the envelope in structuredContent with an EMPTY
+    # content list (the gated dry-run path does exactly that): prefer
+    # structuredContent, fall back to the content text. Printing neither
+    # leaves the caller's verification walking a void (the 2026-11-20 to 22
+    # uploads failed this way on top of the missing confirm).
+    structured = result.get("structuredContent")
+    if structured is not None:
+        print(json.dumps(structured, indent=1))
+        return 0
     if result.get("isError"):
         text = "\n".join(c.get("text", "") for c in result.get("content", [])
                          if isinstance(c, dict))
